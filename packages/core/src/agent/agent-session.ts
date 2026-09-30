@@ -730,7 +730,9 @@ function isHostConfirmedAction(
 }
 
 function agentOutputBudget(model: Model<Api>): number {
-  return Math.min(8192, typeof model.maxTokens === "number" && model.maxTokens > 0 ? model.maxTokens : 4096);
+  return typeof model.maxTokens === "number" && model.maxTokens > 0
+    ? Math.min(65536, model.maxTokens)
+    : 4096;
 }
 
 function agentContextBudget(model: Model<Api>): number {

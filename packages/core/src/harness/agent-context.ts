@@ -205,6 +205,22 @@ export function createHarnessContextTransform(input: {
     }
 
     if (finalTokens > input.budgetTokens) {
+      // If summary is pushing us over budget, try dropping summary message
+      const withoutSummary = [
+        ...(contextMessage ? [contextMessage as AgentMessage] : []),
+        ...(progressMessage ? [progressMessage] : []),
+        ...protectedTail,
+      ];
+      if (estimateAgentMessages(withoutSummary) <= input.budgetTokens) {
+        finalMessages = withoutSummary;
+        finalTokens = estimateAgentMessages(finalMessages);
+      }
+    }
+
+    // Heuristic estimation tolerance: CJK token estimation has ~5% variance compared to real BPE tokenizers.
+    // Allow up to 5% estimation discrepancy before declaring a fatal budget overflow.
+    const hardLimit = Math.floor(input.budgetTokens * 1.05);
+    if (finalTokens > hardLimit) {
       throw new Error(`Compacted conversation still exceeds budget: ${finalTokens}/${input.budgetTokens} tokens`);
     }
     return finalMessages;

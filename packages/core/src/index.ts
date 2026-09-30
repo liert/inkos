@@ -2,7 +2,7 @@
 export { type BookConfig, type Platform, type Genre, type BookStatus, type FanficMode, BookConfigSchema, PlatformSchema, GenreSchema, BookStatusSchema, FanficModeSchema } from "./models/book.js";
 export { type ChapterMeta, ChapterMetaSchema } from "./models/chapter.js";
 export { type Observation, ObservationSchema } from "./models/observation.js";
-export { type ProjectConfig, type LLMConfig, type NotifyChannel, type DetectionConfig, type AgentLLMOverride, type ResearchSearchConfig, ProjectConfigSchema, LLMConfigSchema, AgentLLMOverrideSchema, DetectionConfigSchema, ResearchSearchConfigSchema } from "./models/project.js";
+export { type ProjectConfig, type LLMConfig, type CustomModelConfig, type NotifyChannel, type DetectionConfig, type AgentLLMOverride, type ResearchSearchConfig, ProjectConfigSchema, LLMConfigSchema, LLMServiceEntrySchema, CustomModelConfigSchema, AgentLLMOverrideSchema, DetectionConfigSchema, ResearchSearchConfigSchema } from "./models/project.js";
 export { type BookRules, type ParsedBookRules, BookRulesSchema } from "./models/book-rules.js";
 export { type DetectionHistoryEntry, type DetectionStats } from "./models/detection.js";
 export { type LengthCountingMode, type LengthSpec, type LengthTelemetry, LengthCountingModeSchema, LengthSpecSchema, LengthTelemetrySchema } from "./models/length-governance.js";
@@ -388,7 +388,7 @@ export {
   type ServicePreset,
   type ModelInfo,
 } from "./llm/service-presets.js";
-export { resolveServiceModel, ServiceApiKeyNotFoundError, type ResolvedModel } from "./llm/service-resolver.js";
+export { resolveServiceModel, ServiceApiKeyNotFoundError, type ResolvedModel, type ResolveServiceModelOptions } from "./llm/service-resolver.js";
 export { loadSecrets, saveSecrets, getServiceApiKey, type SecretsFile } from "./llm/secrets.js";
 export {
   COVER_PROVIDER_PRESETS,

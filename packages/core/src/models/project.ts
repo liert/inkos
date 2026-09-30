@@ -1,12 +1,27 @@
 import { z } from "zod";
 import { LLM_API_FORMATS } from "../llm/api-format.js";
 
+export const CustomModelConfigSchema = z.object({
+  contextWindow: z.number().int().positive().optional(),
+  maxOutput: z.number().int().positive().optional(),
+  temperature: z.number().min(0).max(2).optional(),
+  topP: z.number().min(0).max(1).optional(),
+  thinkingBudget: z.number().int().min(0).optional(),
+}).strict();
+
+export type CustomModelConfig = z.infer<typeof CustomModelConfigSchema>;
+
 export const LLMServiceEntrySchema = z.object({
   service: z.string().min(1),
   name: z.string().min(1).optional(),
   baseUrl: z.string().url().optional(),
   models: z.array(z.string().min(1)).optional(),
   temperature: z.number().min(0).max(2).optional(),
+  topP: z.number().min(0).max(1).optional(),
+  contextWindow: z.number().int().positive().optional(),
+  maxOutput: z.number().int().positive().optional(),
+  thinkingBudget: z.number().int().min(0).optional(),
+  modelConfigs: z.record(CustomModelConfigSchema).optional(),
   apiFormat: z.enum(LLM_API_FORMATS).optional(),
   stream: z.boolean().optional(),
 }).strict();
@@ -26,6 +41,9 @@ export const LLMConfigSchema = z.object({
   model: z.string().min(1),
   proxyUrl: z.string().url().optional(),
   temperature: z.number().min(0).max(2).default(0.7),
+  topP: z.number().min(0).max(1).optional(),
+  contextWindow: z.number().int().positive().optional(),
+  maxOutput: z.number().int().positive().optional(),
   thinkingBudget: z.number().int().min(0).default(0),
   extra: z.record(z.unknown()).optional(),
   headers: z.record(z.string()).optional(),

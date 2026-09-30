@@ -59,6 +59,17 @@ interface ServiceConfigEntry {
   readonly baseUrl?: string;
   readonly models?: readonly string[];
   readonly temperature?: number;
+  readonly topP?: number;
+  readonly contextWindow?: number;
+  readonly maxOutput?: number;
+  readonly thinkingBudget?: number;
+  readonly modelConfigs?: Readonly<Record<string, {
+    readonly contextWindow?: number;
+    readonly maxOutput?: number;
+    readonly temperature?: number;
+    readonly topP?: number;
+    readonly thinkingBudget?: number;
+  }>>;
   readonly apiFormat?: LLMApiFormat;
   readonly stream?: boolean;
 }
@@ -202,6 +213,14 @@ async function applyProjectServiceConfig(
     assertModelBelongsToService(selectedEntry, model);
     llm.model = model;
     diagnostics.modelSource = modelSource;
+    const modelOverride = selectedEntry?.modelConfigs?.[model];
+    if (modelOverride) {
+      if (modelOverride.temperature !== undefined) llm.temperature = modelOverride.temperature;
+      if (modelOverride.topP !== undefined) llm.topP = modelOverride.topP;
+      if (modelOverride.contextWindow !== undefined) llm.contextWindow = modelOverride.contextWindow;
+      if (modelOverride.maxOutput !== undefined) llm.maxOutput = modelOverride.maxOutput;
+      if (modelOverride.thinkingBudget !== undefined) llm.thinkingBudget = modelOverride.thinkingBudget;
+    }
   }
 
   if (options.envProvider) llm.provider = options.envProvider;
@@ -329,6 +348,11 @@ function applyServiceEntry(llm: Record<string, unknown>, entry: ServiceConfigEnt
   llm.baseUrl = entry.baseUrl ?? resolveServicePreset(entry.service)?.baseUrl ?? "";
 
   if (entry.temperature !== undefined) llm.temperature = entry.temperature;
+  if (entry.topP !== undefined) llm.topP = entry.topP;
+  if (entry.contextWindow !== undefined) llm.contextWindow = entry.contextWindow;
+  if (entry.maxOutput !== undefined) llm.maxOutput = entry.maxOutput;
+  if (entry.thinkingBudget !== undefined) llm.thinkingBudget = entry.thinkingBudget;
+
   if (entry.apiFormat !== undefined) llm.apiFormat = entry.apiFormat;
   else if (transportDefaults?.apiFormat !== undefined) llm.apiFormat = transportDefaults.apiFormat;
   else {
@@ -349,6 +373,9 @@ function applyCommonEnv(
   env: LLMEnvMap,
 ): void {
   if (env.INKOS_LLM_TEMPERATURE) llm.temperature = Number.parseFloat(env.INKOS_LLM_TEMPERATURE);
+  if (env.INKOS_LLM_TOP_P) llm.topP = Number.parseFloat(env.INKOS_LLM_TOP_P);
+  if (env.INKOS_LLM_CONTEXT_WINDOW) llm.contextWindow = Number.parseInt(env.INKOS_LLM_CONTEXT_WINDOW, 10);
+  if (env.INKOS_LLM_MAX_OUTPUT) llm.maxOutput = Number.parseInt(env.INKOS_LLM_MAX_OUTPUT, 10);
   if (env.INKOS_LLM_THINKING_BUDGET) llm.thinkingBudget = Number.parseInt(env.INKOS_LLM_THINKING_BUDGET, 10);
   if (env.INKOS_LLM_PROXY_URL) llm.proxyUrl = env.INKOS_LLM_PROXY_URL;
   if (env.INKOS_LLM_API_FORMAT) llm.apiFormat = env.INKOS_LLM_API_FORMAT;

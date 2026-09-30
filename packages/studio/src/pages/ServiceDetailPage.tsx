@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { fetchJson } from "../hooks/use-api";
 import { useServiceStore } from "../store/service";
-import { Eye, EyeOff, Loader2, ArrowLeft, Plus, Trash2, X } from "lucide-react";
+import { Eye, EyeOff, Loader2, ArrowLeft, Plus, Trash2, X, Settings, RotateCcw, SlidersHorizontal, Check } from "lucide-react";
 import { ServiceQuickLinks } from "../components/ServiceQuickLinks";
 import { tr } from "../lib/app-language";
 import { isLLMApiFormat } from "@actalk/inkos-core/llm/api-format";
@@ -56,12 +57,17 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   const [customName, setCustomName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [temperature, setTemperature] = useState("0.7");
+  const [topP, setTopP] = useState("0.95");
+  const [contextWindow, setContextWindow] = useState("128000");
+  const [maxOutput, setMaxOutput] = useState("4096");
+  const [thinkingBudget, setThinkingBudget] = useState("0");
   const [apiFormat, setApiFormat] = useState<LLMApiFormat>("chat");
   const [stream, setStream] = useState(true);
   const [detectedModel, setDetectedModel] = useState<string>("");
   const [detectedConfig, setDetectedConfig] = useState<DetectedConfig | null>(null);
   const [verifiedProbe, setVerifiedProbe] = useState<VerifiedProbe | null>(null);
   const [configuredModels, setConfiguredModels] = useState<ModelInfo[]>([]);
+  const [editingModel, setEditingModel] = useState<ModelInfo | null>(null);
   const [modelIdInput, setModelIdInput] = useState("");
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
 
@@ -80,10 +86,32 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
           setBaseUrl(String(matched.baseUrl ?? ""));
         }
         if (typeof matched.temperature === "number") setTemperature(String(matched.temperature));
+        if (typeof matched.topP === "number") setTopP(String(matched.topP));
+        if (typeof matched.contextWindow === "number") setContextWindow(String(matched.contextWindow));
+        if (typeof matched.maxOutput === "number") setMaxOutput(String(matched.maxOutput));
+        if (typeof matched.thinkingBudget === "number") setThinkingBudget(String(matched.thinkingBudget));
         if (isLLMApiFormat(matched.apiFormat)) setApiFormat(matched.apiFormat);
         if (typeof matched.stream === "boolean") setStream(matched.stream);
+
+        const rawConfigs = (matched.modelConfigs && typeof matched.modelConfigs === "object")
+          ? matched.modelConfigs as Record<string, Record<string, unknown>>
+          : {};
+
         if (Array.isArray(matched.models)) {
-          setConfiguredModels(mergeServiceDetailModels(matched.models.filter((model): model is string => typeof model === "string")));
+          const modelsWithConfigs = matched.models
+            .filter((model): model is string => typeof model === "string")
+            .map((id) => {
+              const cfg = rawConfigs[id] ?? {};
+              return {
+                id,
+                ...(typeof cfg.contextWindow === "number" ? { contextWindow: cfg.contextWindow } : {}),
+                ...(typeof cfg.maxOutput === "number" ? { maxOutput: cfg.maxOutput } : {}),
+                ...(typeof cfg.temperature === "number" ? { temperature: cfg.temperature } : {}),
+                ...(typeof cfg.topP === "number" ? { topP: cfg.topP } : {}),
+                ...(typeof cfg.thinkingBudget === "number" ? { thinkingBudget: cfg.thinkingBudget } : {}),
+              };
+            });
+          setConfiguredModels(mergeServiceDetailModels(modelsWithConfigs));
         }
       })
       .catch(() => {});
@@ -233,6 +261,10 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         apiFormat,
         stream,
         temperature,
+        topP,
+        contextWindow,
+        maxOutput,
+        thinkingBudget,
         detectedModel,
         configuredModels,
         verifiedProbe,
@@ -259,6 +291,24 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
     } catch (e) {
       setStatus({ state: "error", message: e instanceof Error ? e.message : tr("保存失败", "Save failed") });
     }
+  };
+
+  const handleResetAdvancedDefaults = () => {
+    setTemperature("0.7");
+    setTopP("0.95");
+    setContextWindow("128000");
+    setMaxOutput("4096");
+    setThinkingBudget("0");
+  };
+
+  const handleSaveModelOverride = (updated: ModelInfo) => {
+    const next = configuredModels.map((m) =>
+      m.id.toLowerCase() === updated.id.toLowerCase() ? updated : m
+    );
+    setConfiguredModels(next);
+    setStoreModels(effectiveServiceId, next);
+    if (status.state === "connected") setStatus({ state: "connected", models: next });
+    setEditingModel(null);
   };
 
   const handleAddModel = () => {
@@ -433,19 +483,43 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
           <div className="space-y-2">
             {models.length > 0 ? (
               <div className="flex gap-1.5 flex-wrap">
-                {models.map((m) => (
-                  <span key={m.id} className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-md bg-emerald-500/[0.06] text-emerald-600 dark:text-emerald-400 border border-emerald-500/15">
-                    {m.name ?? m.id}
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveModel(m.id)}
-                      aria-label={tr(`移除模型 ${m.id}`, `Remove model ${m.id}`)}
-                      className="rounded-sm opacity-60 hover:opacity-100"
+                {models.map((m) => {
+                  const hasCustom = m.contextWindow !== undefined
+                    || m.maxOutput !== undefined
+                    || m.temperature !== undefined
+                    || m.topP !== undefined
+                    || m.thinkingBudget !== undefined;
+                  return (
+                    <span
+                      key={m.id}
+                      className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md bg-emerald-500/[0.06] text-emerald-600 dark:text-emerald-400 border border-emerald-500/15"
                     >
-                      <X size={11} />
-                    </button>
-                  </span>
-                ))}
+                      <span className="font-mono">{m.name ?? m.id}</span>
+                      {hasCustom && (
+                        <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-mono font-medium">
+                          {m.contextWindow ? `${Math.round(m.contextWindow / 1000)}k` : tr("自定义", "Custom")}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setEditingModel(m)}
+                        aria-label={tr(`配置模型 ${m.id}`, `Configure model ${m.id}`)}
+                        title={tr("配置此模型的高级参数（非必填）", "Configure advanced parameters for this model")}
+                        className="rounded-sm opacity-60 hover:opacity-100 transition-opacity text-foreground/80 hover:text-foreground"
+                      >
+                        <Settings size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveModel(m.id)}
+                        aria-label={tr(`移除模型 ${m.id}`, `Remove model ${m.id}`)}
+                        className="rounded-sm opacity-60 hover:opacity-100 transition-opacity"
+                      >
+                        <X size={11} />
+                      </button>
+                    </span>
+                  );
+                })}
               </div>
             ) : (
               <p className="text-xs text-muted-foreground/60">{tr("点击“测试连接”查看可用模型", "Click “Test connection” to list available models")}</p>
@@ -455,23 +529,425 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         </div>
 
         {/* Advanced params */}
-        <details className="group pt-2 border-t border-border/20">
-          <summary className="text-xs text-muted-foreground/60 cursor-pointer select-none hover:text-muted-foreground transition-colors py-2">
-            {tr("高级参数", "Advanced")}
+        <details className="group pt-2 border-t border-border/20" open={false}>
+          <summary className="text-xs text-muted-foreground/60 cursor-pointer select-none hover:text-muted-foreground transition-colors py-2 flex items-center justify-between">
+            <span className="font-medium flex items-center gap-1.5">
+              <SlidersHorizontal size={13} />
+              {tr("高级参数（非必填）", "Advanced Parameters (Optional)")}
+            </span>
+            <span className="text-[10px] text-muted-foreground/50">
+              {tr("已设默认值，留空自动生效", "Defaults set, optional")}
+            </span>
           </summary>
-          <div className="space-y-4 pt-2">
-            <Field label="temperature">
-              <div className="flex items-center gap-3">
-                <input type="range" min="0" max="2" step="0.05" value={temperature}
-                  onChange={(e) => setTemperature(e.target.value)} className="flex-1 accent-primary h-1" />
-                <input type="number" value={temperature} onChange={(e) => setTemperature(e.target.value)}
-                  min="0" max="2" step="0.05" className="w-16 rounded-md border border-border/60 bg-background px-2 py-1 text-xs text-right font-mono" />
+          <div className="space-y-4 pt-3 pb-1">
+            <div className="flex items-center justify-between text-xs text-muted-foreground/70 bg-secondary/30 p-2.5 rounded-lg border border-border/30">
+              <span>{tr("这些参数将作为本服务下所有模型的通用默认值，也可点击各模型右侧的 ⚙️ 设置专属参数。", "These parameters apply as defaults for all models in this service. Individual models can also have dedicated overrides via ⚙️.")}</span>
+              <button
+                type="button"
+                onClick={handleResetAdvancedDefaults}
+                className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-border/40 hover:bg-secondary/60 text-muted-foreground hover:text-foreground transition-colors shrink-0 ml-2"
+                title={tr("将所有高级参数恢复为系统推荐默认值", "Reset all parameters to system defaults")}
+              >
+                <RotateCcw size={11} />
+                {tr("恢复默认值", "Reset defaults")}
+              </button>
+            </div>
+
+            {/* Context Window */}
+            <Field label={tr("上下文窗口 (Context Window, tokens)", "Context Window (tokens)")}>
+              <div className="space-y-1.5">
+                <input
+                  type="number"
+                  value={contextWindow}
+                  onChange={(e) => setContextWindow(e.target.value)}
+                  placeholder="128000"
+                  min="1000"
+                  className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono"
+                />
+                <div className="flex gap-1.5 flex-wrap">
+                  {[
+                    { label: "32K", value: "32768" },
+                    { label: "64K", value: "65536" },
+                    { label: "128K (推荐默认)", value: "128000" },
+                    { label: "200K", value: "200000" },
+                    { label: "1M", value: "1000000" },
+                  ].map((pill) => (
+                    <button
+                      key={pill.value}
+                      type="button"
+                      onClick={() => setContextWindow(pill.value)}
+                      className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
+                        contextWindow === pill.value
+                          ? "bg-primary text-primary-foreground border-primary font-medium"
+                          : "bg-secondary/40 text-muted-foreground border-border/40 hover:bg-secondary"
+                      }`}
+                    >
+                      {pill.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
+                  {tr(
+                    "单次请求支持的最大上下文总量（包含提示词与生成文本），默认 128,000。若遇到“上下文超预算”错误，可调大此值匹配模型实际窗口。",
+                    "Maximum context window tokens. Default is 128,000. Increase if context budget errors occur to match model's actual capacity.",
+                  )}
+                </p>
+              </div>
+            </Field>
+
+            {/* Max Output */}
+            <Field label={tr("最大输出长度 (Max Output Tokens)", "Max Output Tokens")}>
+              <div className="space-y-1.5">
+                <input
+                  type="number"
+                  value={maxOutput}
+                  onChange={(e) => setMaxOutput(e.target.value)}
+                  placeholder="4096"
+                  min="256"
+                  className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono"
+                />
+                <div className="flex gap-1.5 flex-wrap">
+                  {[
+                    { label: "2K", value: "2048" },
+                    { label: "4K (推荐默认)", value: "4096" },
+                    { label: "8K", value: "8192" },
+                    { label: "16K", value: "16384" },
+                  ].map((pill) => (
+                    <button
+                      key={pill.value}
+                      type="button"
+                      onClick={() => setMaxOutput(pill.value)}
+                      className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
+                        maxOutput === pill.value
+                          ? "bg-primary text-primary-foreground border-primary font-medium"
+                          : "bg-secondary/40 text-muted-foreground border-border/40 hover:bg-secondary"
+                      }`}
+                    >
+                      {pill.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
+                  {tr(
+                    "单次生成允许的最大 token 数量，默认 4,096。",
+                    "Maximum generated tokens per request. Default is 4,096.",
+                  )}
+                </p>
+              </div>
+            </Field>
+
+            {/* Temperature */}
+            <Field label={tr("采样温度 (Temperature)", "Temperature")}>
+              <div className="space-y-1">
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min="0"
+                    max="2"
+                    step="0.05"
+                    value={temperature}
+                    onChange={(e) => setTemperature(e.target.value)}
+                    className="flex-1 accent-primary h-1"
+                  />
+                  <input
+                    type="number"
+                    value={temperature}
+                    onChange={(e) => setTemperature(e.target.value)}
+                    min="0"
+                    max="2"
+                    step="0.05"
+                    className="w-16 rounded-md border border-border/60 bg-background px-2 py-1 text-xs text-right font-mono"
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground/60">
+                  {tr("控制回答创造力与随机度（0.0 严谨，2.0 奔放），默认 0.70。", "Controls randomness and creativity. Default is 0.70.")}
+                </p>
+              </div>
+            </Field>
+
+            {/* Top-P */}
+            <Field label={tr("Top-P 采样 (Nucleus Sampling)", "Top-P Sampling")}>
+              <div className="space-y-1">
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={topP}
+                    onChange={(e) => setTopP(e.target.value)}
+                    className="flex-1 accent-primary h-1"
+                  />
+                  <input
+                    type="number"
+                    value={topP}
+                    onChange={(e) => setTopP(e.target.value)}
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    className="w-16 rounded-md border border-border/60 bg-background px-2 py-1 text-xs text-right font-mono"
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground/60">
+                  {tr("核采样阈值，推荐保持默认值 0.95。", "Nucleus sampling threshold. Default is 0.95.")}
+                </p>
+              </div>
+            </Field>
+
+            {/* Thinking Budget */}
+            <Field label={tr("思考预算 (Thinking Budget, tokens)", "Thinking Budget (tokens)")}>
+              <div className="space-y-1">
+                <input
+                  type="number"
+                  value={thinkingBudget}
+                  onChange={(e) => setThinkingBudget(e.target.value)}
+                  placeholder="0"
+                  min="0"
+                  className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono"
+                />
+                <p className="text-[11px] text-muted-foreground/60">
+                  {tr("针对思考推理模型（例如 DeepSeek R1、o1 等）的思考 token 预算，0 表示关闭或自动。", "Thinking token budget for reasoning models. 0 for auto/disabled.")}
+                </p>
               </div>
             </Field>
           </div>
         </details>
       </div>
+
+      {/* Model-specific settings modal */}
+      {editingModel && (
+        <ModelSettingsModal
+          model={editingModel}
+          serviceDefaults={{
+            contextWindow,
+            maxOutput,
+            temperature,
+            topP,
+            thinkingBudget,
+          }}
+          onSave={handleSaveModelOverride}
+          onClose={() => setEditingModel(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function ModelSettingsModal({
+  model,
+  serviceDefaults,
+  onSave,
+  onClose,
+}: {
+  model: ModelInfo;
+  serviceDefaults: {
+    contextWindow: string;
+    maxOutput: string;
+    temperature: string;
+    topP: string;
+    thinkingBudget: string;
+  };
+  onSave: (updated: ModelInfo) => void;
+  onClose: () => void;
+}) {
+  const [contextWindow, setContextWindow] = useState(
+    model.contextWindow !== undefined ? String(model.contextWindow) : ""
+  );
+  const [maxOutput, setMaxOutput] = useState(
+    model.maxOutput !== undefined ? String(model.maxOutput) : ""
+  );
+  const [temperature, setTemperature] = useState(
+    model.temperature !== undefined ? String(model.temperature) : ""
+  );
+  const [topP, setTopP] = useState(
+    model.topP !== undefined ? String(model.topP) : ""
+  );
+  const [thinkingBudget, setThinkingBudget] = useState(
+    model.thinkingBudget !== undefined ? String(model.thinkingBudget) : ""
+  );
+
+  const handleClear = () => {
+    setContextWindow("");
+    setMaxOutput("");
+    setTemperature("");
+    setTopP("");
+    setThinkingBudget("");
+  };
+
+  const handleApply = () => {
+    const parsedCw = contextWindow.trim() ? parseInt(contextWindow, 10) : undefined;
+    const parsedMo = maxOutput.trim() ? parseInt(maxOutput, 10) : undefined;
+    const parsedTemp = temperature.trim() ? parseFloat(temperature) : undefined;
+    const parsedTp = topP.trim() ? parseFloat(topP) : undefined;
+    const parsedTb = thinkingBudget.trim() ? parseInt(thinkingBudget, 10) : undefined;
+
+    onSave({
+      id: model.id,
+      name: model.name,
+      contextWindow: parsedCw !== undefined && !Number.isNaN(parsedCw) ? parsedCw : undefined,
+      maxOutput: parsedMo !== undefined && !Number.isNaN(parsedMo) ? parsedMo : undefined,
+      temperature: parsedTemp !== undefined && !Number.isNaN(parsedTemp) ? parsedTemp : undefined,
+      topP: parsedTp !== undefined && !Number.isNaN(parsedTp) ? parsedTp : undefined,
+      thinkingBudget: parsedTb !== undefined && !Number.isNaN(parsedTb) ? parsedTb : undefined,
+    });
+  };
+
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="relative w-full max-w-md rounded-xl border border-border/70 bg-card p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between border-b border-border/40 pb-3">
+          <div>
+            <h3 className="text-base font-semibold font-serif text-foreground">
+              {tr("配置模型专属高级参数", "Model Advanced Parameters")}
+            </h3>
+            <p className="text-xs text-muted-foreground font-mono mt-0.5">{model.id}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <p className="text-xs text-muted-foreground/75 leading-relaxed bg-secondary/30 p-2.5 rounded-lg border border-border/30">
+          {tr(
+            "非必填项。留空时将自动继承服务的高级参数（括号内所示）。",
+            "Optional. Leave blank to inherit service-level defaults (shown in brackets).",
+          )}
+        </p>
+
+        <div className="space-y-3.5">
+          {/* Context Window */}
+          <Field label={tr("上下文窗口 (Context Window, tokens)", "Context Window (tokens)")}>
+            <div className="space-y-1.5">
+              <input
+                type="number"
+                value={contextWindow}
+                onChange={(e) => setContextWindow(e.target.value)}
+                placeholder={tr(`继承服务默认 (${serviceDefaults.contextWindow})`, `Inherit default (${serviceDefaults.contextWindow})`)}
+                min="1000"
+                className="w-full rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs font-mono"
+              />
+              <div className="flex gap-1 flex-wrap">
+                {["32768", "65536", "128000", "200000", "1000000"].map((val) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setContextWindow(val)}
+                    className="text-[10px] px-1.5 py-0.5 rounded border border-border/40 bg-secondary/30 hover:bg-secondary text-muted-foreground"
+                  >
+                    {val === "128000" ? "128K" : val === "1000000" ? "1M" : val === "200000" ? "200K" : val === "65536" ? "64K" : "32K"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </Field>
+
+          {/* Max Output */}
+          <Field label={tr("最大输出长度 (Max Output Tokens)", "Max Output Tokens")}>
+            <div className="space-y-1.5">
+              <input
+                type="number"
+                value={maxOutput}
+                onChange={(e) => setMaxOutput(e.target.value)}
+                placeholder={tr(`继承服务默认 (${serviceDefaults.maxOutput})`, `Inherit default (${serviceDefaults.maxOutput})`)}
+                min="256"
+                className="w-full rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs font-mono"
+              />
+              <div className="flex gap-1 flex-wrap">
+                {["2048", "4096", "8192", "16384"].map((val) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setMaxOutput(val)}
+                    className="text-[10px] px-1.5 py-0.5 rounded border border-border/40 bg-secondary/30 hover:bg-secondary text-muted-foreground"
+                  >
+                    {val === "4096" ? "4K" : val === "8192" ? "8K" : val === "16384" ? "16K" : "2K"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </Field>
+
+          {/* Temperature */}
+          <Field label={tr("采样温度 (Temperature)", "Temperature")}>
+            <input
+              type="number"
+              value={temperature}
+              onChange={(e) => setTemperature(e.target.value)}
+              placeholder={tr(`继承服务默认 (${serviceDefaults.temperature})`, `Inherit default (${serviceDefaults.temperature})`)}
+              min="0"
+              max="2"
+              step="0.05"
+              className="w-full rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs font-mono"
+            />
+          </Field>
+
+          {/* Top-P */}
+          <Field label={tr("Top-P 采样", "Top-P")}>
+            <input
+              type="number"
+              value={topP}
+              onChange={(e) => setTopP(e.target.value)}
+              placeholder={tr(`继承服务默认 (${serviceDefaults.topP})`, `Inherit default (${serviceDefaults.topP})`)}
+              min="0"
+              max="1"
+              step="0.01"
+              className="w-full rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs font-mono"
+            />
+          </Field>
+
+          {/* Thinking Budget */}
+          <Field label={tr("思考预算 (Thinking Budget, tokens)", "Thinking Budget (tokens)")}>
+            <input
+              type="number"
+              value={thinkingBudget}
+              onChange={(e) => setThinkingBudget(e.target.value)}
+              placeholder={tr(`继承服务默认 (${serviceDefaults.thinkingBudget})`, `Inherit default (${serviceDefaults.thinkingBudget})`)}
+              min="0"
+              className="w-full rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs font-mono"
+            />
+          </Field>
+        </div>
+
+        <div className="flex items-center justify-between pt-3 border-t border-border/40">
+          <button
+            type="button"
+            onClick={handleClear}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {tr("清除专属配置 (继承服务默认)", "Clear overrides")}
+          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 rounded-lg border border-border/60 text-xs hover:bg-secondary transition-colors"
+            >
+              {tr("取消", "Cancel")}
+            </button>
+            <button
+              type="button"
+              onClick={handleApply}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs hover:bg-primary/90 transition-colors"
+            >
+              <Check size={12} />
+              {tr("确定", "Apply")}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

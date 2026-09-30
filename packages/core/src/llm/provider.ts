@@ -327,6 +327,7 @@ export interface LLMClient {
      */
     readonly maxTokens: number;
     readonly thinkingBudget: number;
+    readonly topP?: number;
     readonly extra: Record<string, unknown>;
   };
 }
@@ -337,8 +338,9 @@ export function createLLMClient(config: LLMConfig): LLMClient {
   const _earlyCard = lookupModel(config.service ?? "custom", config.model);
   const defaults = {
     temperature: config.temperature ?? 0.7,
-    maxTokens: _earlyCard?.maxOutput ?? UNKNOWN_MODEL_FALLBACK_MAX_TOKENS,
+    maxTokens: config.maxOutput ?? _earlyCard?.maxOutput ?? UNKNOWN_MODEL_FALLBACK_MAX_TOKENS,
     thinkingBudget: config.thinkingBudget ?? 0,
+    topP: config.topP,
     extra: config.extra ?? {},
   };
 
@@ -383,8 +385,8 @@ export function createLLMClient(config: LLMConfig): LLMClient {
     reasoning: (config.thinkingBudget ?? 0) > 0,
     input: ["text"] as ("text" | "image")[],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: modelCard?.contextWindowTokens ?? 128_000,
-    maxTokens: modelCard?.maxOutput ?? UNKNOWN_MODEL_FALLBACK_MAX_TOKENS,
+    contextWindow: config.contextWindow ?? modelCard?.contextWindowTokens ?? 128_000,
+    maxTokens: config.maxOutput ?? modelCard?.maxOutput ?? UNKNOWN_MODEL_FALLBACK_MAX_TOKENS,
     ...(extraHeaders ? { headers: extraHeaders } : {}),
     ...(compat ? { compat } : {}),
   };
@@ -1066,11 +1068,18 @@ function extractAnthropicContent(json: any): string {
     .join("");
 }
 
+interface ResolvedInvocationParams {
+  readonly temperature: number;
+  readonly maxTokens: number;
+  readonly topP?: number;
+  readonly extra: Record<string, unknown>;
+}
+
 async function chatCompletionViaCustomAnthropicCompatible(
   client: LLMClient,
   model: string,
   messages: ReadonlyArray<LLMMessage>,
-  resolved: { readonly temperature: number; readonly maxTokens: number; readonly extra: Record<string, unknown> },
+  resolved: ResolvedInvocationParams,
   onStreamProgress?: OnStreamProgress,
   onTextDelta?: (text: string) => void,
   signal?: AbortSignal,
@@ -1086,6 +1095,7 @@ async function chatCompletionViaCustomAnthropicCompatible(
     stream: client.stream,
     max_tokens: resolved.maxTokens,
     temperature: resolved.temperature,
+    ...(resolved.topP !== undefined ? { top_p: resolved.topP } : {}),
     ...extra,
   };
   const system = joinSystemPrompt(messages);
@@ -1185,7 +1195,7 @@ async function chatCompletionViaCustomOpenAICompatible(
   client: LLMClient,
   model: string,
   messages: ReadonlyArray<LLMMessage>,
-  resolved: { readonly temperature: number; readonly maxTokens: number; readonly extra: Record<string, unknown> },
+  resolved: ResolvedInvocationParams,
   onStreamProgress?: OnStreamProgress,
   onTextDelta?: (text: string) => void,
   signal?: AbortSignal,
@@ -1318,6 +1328,7 @@ async function chatCompletionViaCustomOpenAICompatible(
     stream: client.stream,
     temperature: resolved.temperature,
     max_tokens: resolved.maxTokens,
+    ...(resolved.topP !== undefined ? { top_p: resolved.topP } : {}),
     ...defaultOpenAIChatExtra(client, model),
     ...extra,
   };
@@ -1471,6 +1482,7 @@ export async function chatCompletion(
   messages: ReadonlyArray<LLMMessage>,
   options?: {
     readonly temperature?: number;
+    readonly topP?: number;
     readonly maxTokens?: number;
     readonly webSearch?: boolean;
     readonly onStreamProgress?: OnStreamProgress;
@@ -1490,6 +1502,7 @@ export async function chatCompletion(
       options?.temperature ?? client.defaults.temperature,
     ),
     maxTokens: options?.maxTokens ?? client.defaults.maxTokens,
+    topP: options?.topP ?? client.defaults.topP,
     extra: client.defaults.extra,
   };
   const onStreamProgress = options?.onStreamProgress;
@@ -1616,7 +1629,7 @@ async function chatCompletionViaPiAi(
   client: LLMClient,
   model: string,
   messages: ReadonlyArray<LLMMessage>,
-  resolved: { readonly temperature: number; readonly maxTokens: number; readonly extra: Record<string, unknown> },
+  resolved: ResolvedInvocationParams,
   onStreamProgress?: OnStreamProgress,
   onTextDelta?: (text: string) => void,
   signal?: AbortSignal,

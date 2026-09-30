@@ -6,24 +6,42 @@ export type { LLMApiFormat } from "@actalk/inkos-core/llm/api-format";
 export interface ServiceDetailModelInfo {
   readonly id: string;
   readonly name?: string;
+  readonly contextWindow?: number;
+  readonly maxOutput?: number;
+  readonly temperature?: number;
+  readonly topP?: number;
+  readonly thinkingBudget?: number;
 }
 
 export function mergeServiceDetailModels(
   ...groups: ReadonlyArray<ReadonlyArray<ServiceDetailModelInfo | string> | undefined>
 ): ServiceDetailModelInfo[] {
-  const seen = new Set<string>();
-  const merged: ServiceDetailModelInfo[] = [];
+  const mergedMap = new Map<string, ServiceDetailModelInfo>();
   for (const group of groups) {
     for (const item of group ?? []) {
       const model = typeof item === "string" ? { id: item } : item;
       const id = model.id.trim();
       const key = id.toLowerCase();
-      if (!id || seen.has(key)) continue;
-      seen.add(key);
-      merged.push({ ...model, id });
+      if (!id) continue;
+      const existing = mergedMap.get(key);
+      if (existing) {
+        mergedMap.set(key, {
+          ...existing,
+          ...model,
+          id: existing.id || id,
+          name: model.name ?? existing.name,
+          contextWindow: model.contextWindow ?? existing.contextWindow,
+          maxOutput: model.maxOutput ?? existing.maxOutput,
+          temperature: model.temperature ?? existing.temperature,
+          topP: model.topP ?? existing.topP,
+          thinkingBudget: model.thinkingBudget ?? existing.thinkingBudget,
+        });
+      } else {
+        mergedMap.set(key, { ...model, id });
+      }
     }
   }
-  return merged;
+  return [...mergedMap.values()];
 }
 
 /**
@@ -147,6 +165,28 @@ export function matchServiceConfigEntryForDetail(
   });
 }
 
+function extractModelConfigs(models: ServiceDetailModelInfo[]): Record<string, {
+  contextWindow?: number;
+  maxOutput?: number;
+  temperature?: number;
+  topP?: number;
+  thinkingBudget?: number;
+}> | undefined {
+  const configs: Record<string, Record<string, number>> = {};
+  for (const m of models) {
+    const cfg: Record<string, number> = {};
+    if (typeof m.contextWindow === "number" && !Number.isNaN(m.contextWindow)) cfg.contextWindow = m.contextWindow;
+    if (typeof m.maxOutput === "number" && !Number.isNaN(m.maxOutput)) cfg.maxOutput = m.maxOutput;
+    if (typeof m.temperature === "number" && !Number.isNaN(m.temperature)) cfg.temperature = m.temperature;
+    if (typeof m.topP === "number" && !Number.isNaN(m.topP)) cfg.topP = m.topP;
+    if (typeof m.thinkingBudget === "number" && !Number.isNaN(m.thinkingBudget)) cfg.thinkingBudget = m.thinkingBudget;
+    if (Object.keys(cfg).length > 0) {
+      configs[m.id] = cfg;
+    }
+  }
+  return Object.keys(configs).length > 0 ? configs : undefined;
+}
+
 export async function saveServiceConfig(args: {
   readonly effectiveServiceId: string;
   readonly serviceId: string;
@@ -158,6 +198,10 @@ export async function saveServiceConfig(args: {
   readonly apiFormat: LLMApiFormat;
   readonly stream: boolean;
   readonly temperature: string;
+  readonly topP?: string;
+  readonly contextWindow?: string;
+  readonly maxOutput?: string;
+  readonly thinkingBudget?: string;
   readonly detectedModel: string;
   readonly configuredModels?: ReadonlyArray<ServiceDetailModelInfo | string>;
   readonly verifiedProbe?: ServiceDetailVerifiedProbe | null;
@@ -250,6 +294,13 @@ export async function saveServiceConfig(args: {
     body: JSON.stringify({ apiKey: trimmedKey }),
   });
 
+  const modelConfigs = extractModelConfigs(savedModels);
+  const parsedTemperature = parseFloat(args.temperature);
+  const parsedTopP = args.topP !== undefined && args.topP !== "" ? parseFloat(args.topP) : undefined;
+  const parsedContextWindow = args.contextWindow !== undefined && args.contextWindow !== "" ? parseInt(args.contextWindow, 10) : undefined;
+  const parsedMaxOutput = args.maxOutput !== undefined && args.maxOutput !== "" ? parseInt(args.maxOutput, 10) : undefined;
+  const parsedThinkingBudget = args.thinkingBudget !== undefined && args.thinkingBudget !== "" ? parseInt(args.thinkingBudget, 10) : undefined;
+
   await fetchJsonImpl("/services/config", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -259,10 +310,15 @@ export async function saveServiceConfig(args: {
       services: [
         {
           service: args.isCustom ? "custom" : args.serviceId,
-          temperature: parseFloat(args.temperature),
+          ...(!Number.isNaN(parsedTemperature) ? { temperature: parsedTemperature } : {}),
+          ...(parsedTopP !== undefined && !Number.isNaN(parsedTopP) ? { topP: parsedTopP } : {}),
+          ...(parsedContextWindow !== undefined && !Number.isNaN(parsedContextWindow) ? { contextWindow: parsedContextWindow } : {}),
+          ...(parsedMaxOutput !== undefined && !Number.isNaN(parsedMaxOutput) ? { maxOutput: parsedMaxOutput } : {}),
+          ...(parsedThinkingBudget !== undefined && !Number.isNaN(parsedThinkingBudget) ? { thinkingBudget: parsedThinkingBudget } : {}),
           apiFormat: savedApiFormat,
           stream: savedStream,
           models: savedModels.map((model) => model.id),
+          ...(modelConfigs ? { modelConfigs } : {}),
           ...(args.isCustom ? {
             name: args.resolvedCustomName,
             baseUrl: savedBaseUrl,

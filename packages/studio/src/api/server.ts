@@ -1663,12 +1663,25 @@ const bookCreateStatus = new Map<string, { status: "creating" | "error"; error?:
 // 内存缓存：service -> 模型列表 + 更新时间戳；避免每次 sidebar 挂载时都打真实 LLM /models
 const modelListCache = new Map<string, { models: Array<{ id: string; name: string }>; at: number }>();
 
+interface CustomModelConfig {
+  contextWindow?: number;
+  maxOutput?: number;
+  temperature?: number;
+  topP?: number;
+  thinkingBudget?: number;
+}
+
 interface ServiceConfigEntry {
   service: string;
   name?: string;
   baseUrl?: string;
   models?: string[];
   temperature?: number;
+  topP?: number;
+  contextWindow?: number;
+  maxOutput?: number;
+  thinkingBudget?: number;
+  modelConfigs?: Record<string, CustomModelConfig>;
   apiFormat?: LLMApiFormat;
   stream?: boolean;
 }
@@ -1809,16 +1822,44 @@ function mergeServiceModelIds(...groups: ReadonlyArray<readonly string[] | undef
   return normalizeServiceModelIds(groups.flatMap((group) => group ?? []));
 }
 
+function normalizeModelConfigs(raw: unknown): Record<string, CustomModelConfig> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const result: Record<string, CustomModelConfig> = {};
+  for (const [modelId, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!val || typeof val !== "object" || Array.isArray(val)) continue;
+    const item = val as Record<string, unknown>;
+    const cfg: CustomModelConfig = {};
+    if (typeof item.contextWindow === "number" && item.contextWindow > 0) cfg.contextWindow = item.contextWindow;
+    if (typeof item.maxOutput === "number" && item.maxOutput > 0) cfg.maxOutput = item.maxOutput;
+    if (typeof item.temperature === "number") cfg.temperature = item.temperature;
+    if (typeof item.topP === "number") cfg.topP = item.topP;
+    if (typeof item.thinkingBudget === "number") cfg.thinkingBudget = item.thinkingBudget;
+    if (Object.keys(cfg).length > 0) {
+      result[modelId] = cfg;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 function normalizeServiceEntry(serviceId: string, value: Record<string, unknown>): ServiceConfigEntry {
+  const common = {
+    ...(typeof value.baseUrl === "string" && value.baseUrl.length > 0 ? { baseUrl: value.baseUrl } : {}),
+    ...(Array.isArray(value.models) ? { models: normalizeServiceModelIds(value.models) } : {}),
+    ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
+    ...(typeof value.topP === "number" ? { topP: value.topP } : {}),
+    ...(typeof value.contextWindow === "number" ? { contextWindow: value.contextWindow } : {}),
+    ...(typeof value.maxOutput === "number" ? { maxOutput: value.maxOutput } : {}),
+    ...(typeof value.thinkingBudget === "number" ? { thinkingBudget: value.thinkingBudget } : {}),
+    ...(normalizeModelConfigs(value.modelConfigs) ? { modelConfigs: normalizeModelConfigs(value.modelConfigs) } : {}),
+    ...(isLLMApiFormat(value.apiFormat) ? { apiFormat: value.apiFormat } : {}),
+    ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
+  };
+
   if (serviceId.startsWith("custom:")) {
     return {
       service: "custom",
       name: decodeURIComponent(serviceId.slice("custom:".length)),
-      ...(typeof value.baseUrl === "string" && value.baseUrl.length > 0 ? { baseUrl: value.baseUrl } : {}),
-      ...(Array.isArray(value.models) ? { models: normalizeServiceModelIds(value.models) } : {}),
-      ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
-      ...(isLLMApiFormat(value.apiFormat) ? { apiFormat: value.apiFormat } : {}),
-      ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
+      ...common,
     };
   }
 
@@ -1826,20 +1867,13 @@ function normalizeServiceEntry(serviceId: string, value: Record<string, unknown>
     return {
       service: "custom",
       ...(typeof value.name === "string" && value.name.length > 0 ? { name: value.name } : {}),
-      ...(typeof value.baseUrl === "string" && value.baseUrl.length > 0 ? { baseUrl: value.baseUrl } : {}),
-      ...(Array.isArray(value.models) ? { models: normalizeServiceModelIds(value.models) } : {}),
-      ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
-      ...(isLLMApiFormat(value.apiFormat) ? { apiFormat: value.apiFormat } : {}),
-      ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
+      ...common,
     };
   }
 
   return {
     service: serviceId,
-    ...(Array.isArray(value.models) ? { models: normalizeServiceModelIds(value.models) } : {}),
-    ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
-    ...(isLLMApiFormat(value.apiFormat) ? { apiFormat: value.apiFormat } : {}),
-    ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
+    ...common,
   };
 }
 
@@ -1857,6 +1891,11 @@ function normalizeServiceConfig(raw: unknown): ServiceConfigEntry[] {
         ...(typeof entry.baseUrl === "string" && entry.baseUrl.length > 0 ? { baseUrl: entry.baseUrl } : {}),
         ...(Array.isArray(entry.models) ? { models: normalizeServiceModelIds(entry.models) } : {}),
         ...(typeof entry.temperature === "number" ? { temperature: entry.temperature } : {}),
+        ...(typeof entry.topP === "number" ? { topP: entry.topP } : {}),
+        ...(typeof entry.contextWindow === "number" ? { contextWindow: entry.contextWindow } : {}),
+        ...(typeof entry.maxOutput === "number" ? { maxOutput: entry.maxOutput } : {}),
+        ...(typeof entry.thinkingBudget === "number" ? { thinkingBudget: entry.thinkingBudget } : {}),
+        ...(normalizeModelConfigs(entry.modelConfigs) ? { modelConfigs: normalizeModelConfigs(entry.modelConfigs) } : {}),
         ...(isLLMApiFormat(entry.apiFormat) ? { apiFormat: entry.apiFormat } : {}),
         ...(typeof entry.stream === "boolean" ? { stream: entry.stream } : {}),
       }));
@@ -1880,6 +1919,12 @@ function mergeServiceConfig(existing: ServiceConfigEntry[], updates: ServiceConf
       ...previous,
       ...update,
       ...(update.models === undefined && previous?.models ? { models: previous.models } : {}),
+      ...(update.modelConfigs === undefined && previous?.modelConfigs ? { modelConfigs: previous.modelConfigs } : {}),
+      ...(update.contextWindow === undefined && previous?.contextWindow ? { contextWindow: previous.contextWindow } : {}),
+      ...(update.maxOutput === undefined && previous?.maxOutput ? { maxOutput: previous.maxOutput } : {}),
+      ...(update.temperature === undefined && previous?.temperature ? { temperature: previous.temperature } : {}),
+      ...(update.topP === undefined && previous?.topP ? { topP: previous.topP } : {}),
+      ...(update.thinkingBudget === undefined && previous?.thinkingBudget ? { thinkingBudget: previous.thinkingBudget } : {}),
     });
   }
   return [...merged.values()];
@@ -4911,12 +4956,20 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         // 1. Frontend explicitly selected a service+model — fail loudly if no key
         try {
           const configuredEntry = await resolveConfiguredServiceEntry(root, reqService);
+          const modelOverride = configuredEntry?.modelConfigs?.[reqModel];
           const resolved = await resolveServiceModel(
             reqService,
             reqModel,
             root,
             await resolveConfiguredServiceBaseUrl(root, reqService),
             configuredEntry?.apiFormat,
+            {
+              contextWindow: modelOverride?.contextWindow ?? configuredEntry?.contextWindow,
+              maxOutput: modelOverride?.maxOutput ?? configuredEntry?.maxOutput,
+              temperature: modelOverride?.temperature ?? configuredEntry?.temperature,
+              topP: modelOverride?.topP ?? configuredEntry?.topP,
+              thinkingBudget: modelOverride?.thinkingBudget ?? configuredEntry?.thinkingBudget,
+            },
           );
           resolvedModel = resolved.model;
           resolvedApiKey = resolved.apiKey;
@@ -4943,12 +4996,20 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         const firstService = servicesArr[0];
         if (firstService?.service && defaultModel && isTextChatModelId(defaultModel)) {
           try {
+            const modelOverride = firstService.modelConfigs?.[defaultModel];
             const resolved = await resolveServiceModel(
               serviceConfigKey(firstService),
               defaultModel,
               root,
               firstService.baseUrl,
               firstService.apiFormat,
+              {
+                contextWindow: modelOverride?.contextWindow ?? firstService.contextWindow,
+                maxOutput: modelOverride?.maxOutput ?? firstService.maxOutput,
+                temperature: modelOverride?.temperature ?? firstService.temperature,
+                topP: modelOverride?.topP ?? firstService.topP,
+                thinkingBudget: modelOverride?.thinkingBudget ?? firstService.thinkingBudget,
+              },
             );
             resolvedModel = resolved.model;
             resolvedApiKey = resolved.apiKey;
@@ -4966,12 +5027,21 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
               const textModels = filterTextChatModels(models);
               if (textModels.length > 0) {
                 const configuredEntry = await resolveConfiguredServiceEntry(root, svcName);
+                const firstModel = textModels[0].id;
+                const modelOverride = configuredEntry?.modelConfigs?.[firstModel];
                 const resolved = await resolveServiceModel(
                   svcName,
-                  textModels[0].id,
+                  firstModel,
                   root,
                   await resolveConfiguredServiceBaseUrl(root, svcName),
                   configuredEntry?.apiFormat,
+                  {
+                    contextWindow: modelOverride?.contextWindow ?? configuredEntry?.contextWindow,
+                    maxOutput: modelOverride?.maxOutput ?? configuredEntry?.maxOutput,
+                    temperature: modelOverride?.temperature ?? configuredEntry?.temperature,
+                    topP: modelOverride?.topP ?? configuredEntry?.topP,
+                    thinkingBudget: modelOverride?.thinkingBudget ?? configuredEntry?.thinkingBudget,
+                  },
                 );
                 resolvedModel = resolved.model;
                 resolvedApiKey = resolved.apiKey;
@@ -4993,6 +5063,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       const model = resolvedModel!;
       const agentApiKey = resolvedApiKey;
       const configuredEntry = reqService ? await resolveConfiguredServiceEntry(root, reqService) : undefined;
+      const modelConfigOverride = configuredEntry?.modelConfigs?.[reqModel ?? ""];
 
       // Create pipeline with the frontend-selected model for capability workers.
       // Don't spread config.llm — its baseUrl/provider belong to the old service.
@@ -5006,6 +5077,11 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
             ...(configuredEntry?.apiFormat ? { apiFormat: configuredEntry.apiFormat } : {}),
             ...(configuredEntry?.stream !== undefined ? { stream: configuredEntry.stream } : {}),
             baseUrl: configuredEntry?.baseUrl ?? "",
+            contextWindow: modelConfigOverride?.contextWindow ?? configuredEntry?.contextWindow ?? (config.llm as any).contextWindow,
+            maxOutput: modelConfigOverride?.maxOutput ?? configuredEntry?.maxOutput ?? (config.llm as any).maxOutput,
+            temperature: modelConfigOverride?.temperature ?? configuredEntry?.temperature ?? config.llm.temperature,
+            topP: modelConfigOverride?.topP ?? configuredEntry?.topP ?? (config.llm as any).topP,
+            thinkingBudget: modelConfigOverride?.thinkingBudget ?? configuredEntry?.thinkingBudget ?? config.llm.thinkingBudget,
           } as any)
         : client;
       // Only a structured action request can start a production task. Free text
