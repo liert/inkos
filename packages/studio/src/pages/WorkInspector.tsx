@@ -1,5 +1,6 @@
 import { CreativeMethodsEditor } from "./CreativeMethodsEditor";
 import { useMemo, useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   Clock3,
@@ -239,6 +240,7 @@ export function WorkInspector({ workId, onBack, onChat }: {
   const { data, loading, error, refetch } = useApi<WorkDetail>(`/works/${encodeURIComponent(workId)}`);
   const previewSequence = useRef(0);
   const readerScrollRef = useRef<HTMLDivElement>(null);
+  const zenScrollRef = useRef<HTMLDivElement>(null);
 
   const [activeTab, setActiveTab] = useState<"reader" | "artifacts" | "methods" | "episodes">("reader");
   const [previewRevisionId, setPreviewRevisionId] = useState("");
@@ -288,6 +290,7 @@ export function WorkInspector({ workId, onBack, onChat }: {
       setDraft(payload.content ?? "");
       setEditing(false);
       readerScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+      zenScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     } catch (err) {
       setOperationError(String(err));
     } finally {
@@ -310,6 +313,43 @@ export function WorkInspector({ workId, onBack, onChat }: {
       void openRevision(target.artifact, target.revision);
     }
   }, [data, categorized, currentRevisions]);
+
+  // Fullscreen / Zen mode handling
+  const toggleFullscreen = () => {
+    if (!zenMode) {
+      setZenMode(true);
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      }
+    } else {
+      setZenMode(false);
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+  };
+
+  useEffect(() => {
+    const onFsChange = () => {
+      if (!document.fullscreenElement && zenMode) {
+        setZenMode(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && zenMode) {
+        setZenMode(false);
+        if (document.fullscreenElement && document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        }
+      }
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [zenMode]);
 
   // Save new revision
   const saveRevision = async () => {
@@ -425,157 +465,151 @@ export function WorkInspector({ workId, onBack, onChat }: {
   const intent = typeof data.work.metadata?.intent === "string" ? data.work.metadata.intent : undefined;
 
   return (
-    <div className={`space-y-6 ${zenMode ? "fixed inset-0 z-50 overflow-hidden bg-background p-4 sm:p-6" : ""}`}>
+    <div className="space-y-6">
       {/* Top Header Bar */}
-      {!zenMode && (
-        <div className="flex items-center justify-between gap-4">
+      <div className="flex items-center justify-between gap-4">
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+        >
+          <ArrowLeft size={16} /> {tr("返回创作库", "Back to library")}
+        </button>
+
+        <div className="flex items-center gap-2.5">
           <button
             type="button"
-            onClick={onBack}
-            className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            onClick={() => onChat(data.work.id, data.work.profileId)}
+            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 shadow-sm transition-all active:scale-95 cursor-pointer"
           >
-            <ArrowLeft size={16} /> {tr("返回创作库", "Back to library")}
+            <MessageSquare size={14} />
+            {tr("与 Agent 继续创作", "Continue with Agent")}
           </button>
-
-          <div className="flex items-center gap-2.5">
-            <button
-              type="button"
-              onClick={() => onChat(data.work.id, data.work.profileId)}
-              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 shadow-sm transition-all active:scale-95 cursor-pointer"
-            >
-              <MessageSquare size={14} />
-              {tr("与 Agent 继续创作", "Continue with Agent")}
-            </button>
-          </div>
         </div>
-      )}
+      </div>
 
       {/* Book Showcase Hero Header */}
-      {!zenMode && (
-        <div className="paper-sheet rounded-2xl p-6 md:p-7 shadow-md relative overflow-hidden">
-          <div className="flex flex-col md:flex-row gap-6 items-start">
-            {/* Cover Book Plate */}
-            <div className="shrink-0 w-28 h-40 md:w-32 md:h-44 rounded-xl overflow-hidden shadow-lg border border-border/60 bg-muted/30 relative group">
-              {coverUrl ? (
-                <img
-                  src={coverUrl}
-                  alt={data.work.title}
-                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 cursor-pointer"
-                  onClick={() => categorized.cover && openRevision(categorized.cover.artifact, categorized.cover.revision)}
-                  title={tr("点击查看封面原图", "Click to view full cover")}
-                />
-              ) : (
-                <div className="w-full h-full flex flex-col items-center justify-center p-3 text-center bg-gradient-to-br from-primary/10 to-primary/5">
-                  <BookOpen size={28} className="text-primary/60 mb-2" />
-                  <span className="font-serif font-bold text-xs text-foreground line-clamp-2">{data.work.title}</span>
-                </div>
-              )}
+      <div className="paper-sheet rounded-2xl p-6 md:p-7 shadow-md relative overflow-hidden">
+        <div className="flex flex-col md:flex-row gap-6 items-start">
+          {/* Cover Book Plate */}
+          <div className="shrink-0 w-28 h-40 md:w-32 md:h-44 rounded-xl overflow-hidden shadow-lg border border-border/60 bg-muted/30 relative group">
+            {coverUrl ? (
+              <img
+                src={coverUrl}
+                alt={data.work.title}
+                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 cursor-pointer"
+                onClick={() => categorized.cover && openRevision(categorized.cover.artifact, categorized.cover.revision)}
+                title={tr("点击查看封面原图", "Click to view full cover")}
+              />
+            ) : (
+              <div className="w-full h-full flex flex-col items-center justify-center p-3 text-center bg-gradient-to-br from-primary/10 to-primary/5">
+                <BookOpen size={28} className="text-primary/60 mb-2" />
+                <span className="font-serif font-bold text-xs text-foreground line-clamp-2">{data.work.title}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Book Details */}
+          <div className="min-w-0 flex-1 space-y-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-widest text-primary px-2 py-0.5 rounded-full bg-primary/10">
+                {data.work.profileId}
+              </span>
+              <span className="text-xs text-muted-foreground font-mono">
+                {data.work.id}
+              </span>
+              <span className="text-xs text-muted-foreground">·</span>
+              <span className="text-xs text-muted-foreground font-medium uppercase">
+                {data.work.language}
+              </span>
             </div>
 
-            {/* Book Details */}
-            <div className="min-w-0 flex-1 space-y-2.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] font-bold uppercase tracking-widest text-primary px-2 py-0.5 rounded-full bg-primary/10">
-                  {data.work.profileId}
-                </span>
-                <span className="text-xs text-muted-foreground font-mono">
-                  {data.work.id}
-                </span>
-                <span className="text-xs text-muted-foreground">·</span>
-                <span className="text-xs text-muted-foreground font-medium uppercase">
-                  {data.work.language}
-                </span>
-              </div>
+            <h1 className="font-serif text-2xl md:text-3xl font-bold text-foreground tracking-tight">
+              {data.work.title}
+            </h1>
 
-              <h1 className="font-serif text-2xl md:text-3xl font-bold text-foreground tracking-tight">
-                {data.work.title}
-              </h1>
+            {intent && (
+              <p className="text-xs md:text-sm text-muted-foreground line-clamp-2 leading-relaxed italic border-l-2 border-primary/40 pl-3">
+                {intent}
+              </p>
+            )}
 
-              {intent && (
-                <p className="text-xs md:text-sm text-muted-foreground line-clamp-2 leading-relaxed italic border-l-2 border-primary/40 pl-3">
-                  {intent}
-                </p>
+            {/* Stats Bar */}
+            <div className="flex flex-wrap items-center gap-3 pt-1 text-xs text-muted-foreground font-medium">
+              {categorized.finalChapters.length > 0 && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-secondary/50 text-foreground">
+                  <Layers size={13} className="text-primary" />
+                  <span>{categorized.finalChapters.length} {tr("个章节", "chapters")}</span>
+                </span>
               )}
-
-              {/* Stats Bar */}
-              <div className="flex flex-wrap items-center gap-3 pt-1 text-xs text-muted-foreground font-medium">
-                {categorized.finalChapters.length > 0 && (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-secondary/50 text-foreground">
-                    <Layers size={13} className="text-primary" />
-                    <span>{categorized.finalChapters.length} {tr("个章节", "chapters")}</span>
-                  </span>
-                )}
-                {totalCharacters > 0 && (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-secondary/50 text-foreground">
-                    <FileText size={13} className="text-primary" />
-                    <span>{Math.round(totalCharacters / 3).toLocaleString()} {tr("字", "chars")}</span>
-                  </span>
-                )}
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold">
-                  <CheckCircle2 size={13} />
-                  <span>{data.work.status}</span>
+              {totalCharacters > 0 && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-secondary/50 text-foreground">
+                  <FileText size={13} className="text-primary" />
+                  <span>{Math.round(totalCharacters / 3).toLocaleString()} {tr("字", "chars")}</span>
                 </span>
-              </div>
+              )}
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold">
+                <CheckCircle2 size={13} />
+                <span>{data.work.status}</span>
+              </span>
             </div>
           </div>
         </div>
-      )}
+      </div>
 
       {/* Main Tabs Navigation */}
-      {!zenMode && (
-        <div className="flex flex-wrap items-center gap-1.5 border-b border-border/50 pb-2">
-          <button
-            type="button"
-            onClick={() => setActiveTab("reader")}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeTab === "reader"
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-            }`}
-          >
-            <BookOpen size={14} />
-            {tr("小说阅读与编辑", "Novel Reader & Editor")}
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("artifacts")}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeTab === "artifacts"
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-            }`}
-          >
-            <GitCommitHorizontal size={14} />
-            {tr("全部生成物与版本", "All Artifacts & Revisions")}
-            <span className="rounded-full bg-secondary px-1.5 py-0.2 text-[10px]">{data.work.artifacts.length}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("methods")}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeTab === "methods"
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-            }`}
-          >
-            <Compass size={14} />
-            {tr("创作配置与方法", "Creative Profile & Methods")}
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("episodes")}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeTab === "episodes"
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-            }`}
-          >
-            <Clock3 size={14} />
-            {tr("执行记录", "Execution History")}
-            <span className="rounded-full bg-secondary px-1.5 py-0.2 text-[10px]">{data.episodes.length}</span>
-          </button>
-        </div>
-      )}
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-border/50 pb-2">
+        <button
+          type="button"
+          onClick={() => setActiveTab("reader")}
+          className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === "reader"
+              ? "bg-primary text-primary-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          }`}
+        >
+          <BookOpen size={14} />
+          {tr("小说阅读与编辑", "Novel Reader & Editor")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("artifacts")}
+          className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === "artifacts"
+              ? "bg-primary text-primary-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          }`}
+        >
+          <GitCommitHorizontal size={14} />
+          {tr("全部生成物与版本", "All Artifacts & Revisions")}
+          <span className="rounded-full bg-secondary px-1.5 py-0.2 text-[10px]">{data.work.artifacts.length}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("methods")}
+          className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === "methods"
+              ? "bg-primary text-primary-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          }`}
+        >
+          <Compass size={14} />
+          {tr("创作配置与方法", "Creative Profile & Methods")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("episodes")}
+          className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === "episodes"
+              ? "bg-primary text-primary-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          }`}
+        >
+          <Clock3 size={14} />
+          {tr("执行记录", "Execution History")}
+          <span className="rounded-full bg-secondary px-1.5 py-0.2 text-[10px]">{data.episodes.length}</span>
+        </button>
+      </div>
 
       {operationError && (
         <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive flex items-center justify-between">
@@ -586,7 +620,7 @@ export function WorkInspector({ workId, onBack, onChat }: {
 
       {/* TAB 1: Novel Reader & Editor */}
       {activeTab === "reader" && (
-        <div className={`grid grid-cols-1 md:grid-cols-12 gap-5 ${zenMode ? "h-[calc(100vh-2rem)]" : "h-[calc(100vh-200px)] min-h-[580px]"}`}>
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-5 h-[calc(100vh-210px)] min-h-[580px]">
           {/* Left Table of Contents Sidebar */}
           {sidebarOpen && (
             <aside className="md:col-span-4 lg:col-span-3 h-full flex flex-col rounded-2xl border border-border/50 bg-card overflow-hidden shadow-xs">
@@ -872,14 +906,14 @@ export function WorkInspector({ workId, onBack, onChat }: {
                   {fontFamily === "serif" ? tr("宋体", "Serif") : tr("黑体", "Sans")}
                 </button>
 
-                {/* Zen Mode Toggle */}
+                {/* Fullscreen / Zen Mode Toggle */}
                 <button
                   type="button"
-                  onClick={() => setZenMode(!zenMode)}
-                  className="p-1.5 rounded-lg border border-border/50 text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
-                  title={zenMode ? tr("退出全屏专注", "Exit Zen Mode") : tr("全屏专注阅读", "Enter Zen Mode")}
+                  onClick={toggleFullscreen}
+                  className="p-1.5 rounded-lg border border-border/50 text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer transition-colors"
+                  title={tr("全屏专注阅读", "Enter Fullscreen")}
                 >
-                  {zenMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                  <Maximize2 size={15} />
                 </button>
 
                 {/* Edit / Save Toggle */}
@@ -1180,6 +1214,174 @@ export function WorkInspector({ workId, onBack, onChat }: {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Fullscreen Zen Reader Modal mounted via Portal to document.body */}
+      {zenMode && typeof document !== "undefined" && createPortal(
+        <div className={`fixed inset-0 z-[9999] flex flex-col ${activeTheme.bg} ${activeTheme.text}`}>
+          {/* Top Bar */}
+          <div className="px-4 sm:px-8 py-3 border-b border-border/40 flex items-center justify-between gap-4 bg-background/60 backdrop-blur-md shrink-0">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <BookOpen size={18} className="text-primary shrink-0" />
+              <span className="font-serif font-bold text-sm sm:text-base text-foreground truncate">
+                {parsedMarkdown?.title || data.work.title}
+              </span>
+              {currentChapterIndex >= 0 && (
+                <span className="text-xs text-muted-foreground font-mono shrink-0">
+                  ({currentChapterIndex + 1}/{categorized.finalChapters.length})
+                </span>
+              )}
+            </div>
+
+            {/* Center Controls */}
+            <div className="flex items-center gap-2 sm:gap-3">
+              {/* Theme Selector */}
+              <div className="flex items-center gap-1 bg-background/80 border border-border/50 rounded-lg p-0.5">
+                {(["paper", "mint", "default", "dark"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setReaderTheme(t)}
+                    className={`w-6 h-6 rounded-md text-xs font-semibold transition-all cursor-pointer flex items-center justify-center ${
+                      readerTheme === t ? "ring-2 ring-primary scale-105" : "opacity-70 hover:opacity-100"
+                    } ${THEME_STYLES[t].bg} ${THEME_STYLES[t].text}`}
+                    title={THEME_STYLES[t].desc}
+                  >
+                    {t === "paper" ? "📜" : t === "mint" ? "🌿" : t === "dark" ? "🌙" : "⚪"}
+                  </button>
+                ))}
+              </div>
+
+              {/* Font Size A- / A+ */}
+              <div className="hidden sm:flex items-center gap-1 bg-background/80 border border-border/50 rounded-lg px-2 py-0.5 text-xs font-bold">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sizes: Array<"sm" | "md" | "lg" | "xl"> = ["sm", "md", "lg", "xl"];
+                    const idx = sizes.indexOf(fontSize);
+                    if (idx > 0) setFontSize(sizes[idx - 1]);
+                  }}
+                  disabled={fontSize === "sm"}
+                  className="px-1 hover:text-primary disabled:opacity-30 cursor-pointer"
+                >
+                  A-
+                </button>
+                <span className="text-[10px] text-muted-foreground font-mono px-1">{fontSize.toUpperCase()}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sizes: Array<"sm" | "md" | "lg" | "xl"> = ["sm", "md", "lg", "xl"];
+                    const idx = sizes.indexOf(fontSize);
+                    if (idx < sizes.length - 1) setFontSize(sizes[idx + 1]);
+                  }}
+                  disabled={fontSize === "xl"}
+                  className="px-1 hover:text-primary disabled:opacity-30 cursor-pointer"
+                >
+                  A+
+                </button>
+              </div>
+
+              {/* Font Family Toggle */}
+              <button
+                type="button"
+                onClick={() => setFontFamily(fontFamily === "serif" ? "sans" : "serif")}
+                className="hidden sm:flex px-2.5 py-1 rounded-lg border border-border/50 text-xs font-medium text-foreground hover:bg-muted cursor-pointer"
+              >
+                {fontFamily === "serif" ? tr("宋体", "Serif") : tr("黑体", "Sans")}
+              </button>
+
+              {/* Exit Fullscreen */}
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-border/60 bg-background text-xs font-semibold text-foreground hover:bg-muted cursor-pointer shadow-xs transition-colors"
+              >
+                <Minimize2 size={14} />
+                <span>{tr("退出全屏 (Esc)", "Exit Fullscreen (Esc)")}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Reading Area */}
+          <div ref={zenScrollRef} className="flex-1 overflow-y-auto px-6 py-10 md:px-16 lg:px-32">
+            <div className="max-w-3xl mx-auto space-y-8">
+              {/* Header */}
+              <div className="text-center border-b border-border/30 pb-6 mb-8">
+                {currentChapterIndex >= 0 && (
+                  <div className="text-xs uppercase tracking-widest text-primary font-bold mb-2">
+                    {tr(`第 ${categorized.finalChapters[currentChapterIndex].chapterNumber} 章`, `Chapter ${categorized.finalChapters[currentChapterIndex].chapterNumber}`)}
+                  </div>
+                )}
+                <h1 className="text-3xl sm:text-4xl font-serif font-bold tracking-tight text-foreground">
+                  {parsedMarkdown?.title || selected?.revision.path}
+                </h1>
+                <div className="mt-3 flex items-center justify-center gap-3 text-xs opacity-60 font-mono">
+                  <span>{(selected?.content?.replace(/\s/g, "").length ?? 0).toLocaleString()} {tr("字", "chars")}</span>
+                </div>
+              </div>
+
+              {/* Paragraphs */}
+              <div className={`space-y-6 text-justify ${fontFamily === "serif" ? "font-serif" : "font-sans"} ${activeFontSize}`}>
+                {parsedMarkdown?.body ? (
+                  parsedMarkdown.body.split(/\n\n+/).filter(Boolean).map((para, idx) => {
+                    const trimmed = para.trim();
+                    if (trimmed.startsWith("## ")) {
+                      return (
+                        <h2 key={idx} className="text-xl sm:text-2xl font-bold font-serif my-8 pt-4 border-t border-border/20 text-center">
+                          {trimmed.replace(/^##\s*/, "")}
+                        </h2>
+                      );
+                    }
+                    if (trimmed.startsWith("### ")) {
+                      return (
+                        <h3 key={idx} className="text-lg font-semibold my-6 text-center">
+                          {trimmed.replace(/^###\s*/, "")}
+                        </h3>
+                      );
+                    }
+                    return (
+                      <p key={idx} className="indent-[2em] my-4 tracking-wide leading-relaxed md:leading-[2.4] select-text">
+                        {trimmed}
+                      </p>
+                    );
+                  })
+                ) : (
+                  <pre className="whitespace-pre-wrap font-mono text-xs">{selected?.content}</pre>
+                )}
+              </div>
+
+              {/* Bottom Pagination */}
+              {categorized.finalChapters.length > 0 && currentChapterIndex >= 0 && (
+                <div className="mt-16 pt-8 border-t border-border/30 flex items-center justify-between pb-12">
+                  <button
+                    type="button"
+                    disabled={!prevChapter}
+                    onClick={() => prevChapter && void openRevision(prevChapter.artifact, prevChapter.revision)}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold border border-border/60 hover:bg-muted disabled:opacity-25 disabled:pointer-events-none transition-colors cursor-pointer"
+                  >
+                    <ChevronLeft size={16} />
+                    <span>{tr("上一章", "Previous chapter")}</span>
+                  </button>
+
+                  <span className="text-sm opacity-60 font-mono">
+                    {currentChapterIndex + 1} / {categorized.finalChapters.length}
+                  </span>
+
+                  <button
+                    type="button"
+                    disabled={!nextChapter}
+                    onClick={() => nextChapter && void openRevision(nextChapter.artifact, nextChapter.revision)}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-25 disabled:pointer-events-none transition-opacity cursor-pointer shadow-md"
+                  >
+                    <span>{tr("下一章", "Next chapter")}</span>
+                    <ChevronRight size={16} />
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );

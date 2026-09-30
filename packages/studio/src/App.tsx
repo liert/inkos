@@ -234,7 +234,7 @@ export function App() {
             </div>
           )}
           {route.page === "work" && (
-            <div className="mx-auto w-full max-w-5xl px-6 py-12 md:px-12 lg:py-16 fade-in">
+            <div className="mx-auto w-full max-w-6xl px-4 py-8 md:px-8 lg:py-10 fade-in">
               <WorkInspector workId={route.workId} onBack={nav.toDashboard} onChat={nav.toWorkChat} />
             </div>
           )}
