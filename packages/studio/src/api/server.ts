@@ -256,6 +256,85 @@ function resolveToolLabel(tool: string, _agent?: string, lang: StudioLanguage = 
   return label ? pick(lang, label.zh, label.en) : tool;
 }
 
+function defaultToolStages(tool: string, lang: StudioLanguage = "zh"): string[] {
+  const isEn = lang === "en";
+  const action = capabilityActionId(tool);
+  if (action === "short_fiction_run" || action === "produce_short_fiction") {
+    return isEn
+      ? ["Outline & Constraints", "Drafting Chapters", "Quality Review & Continuity", "Sales Package & Synopsis", "Cover Image Generation"]
+      : ["大纲构思与约束检查", "批量撰写正文章节", "自动化文学审校", "宣发包装与故事梗概", "视觉海报与封面渲染"];
+  }
+  if (action === "revise_short_fiction") {
+    return isEn
+      ? ["Review Analysis & Plan", "Refining Target Chapters", "Manuscript Re-Review", "Update Sales Package"]
+      : ["分析质检报告与修订规划", "目标章节重构与精修", "全篇连贯性复审", "更新宣发物料包"];
+  }
+  if (action === "create_book") {
+    return isEn
+      ? ["Initialize Workspace", "Character & World Setup", "Story Arc & Outline", "Initial Chapter Production"]
+      : ["建档与初始化工作区", "设定主角与背景世界观", "规划长篇分卷大纲", "首批章节写作"];
+  }
+  if (action === "create_script") {
+    return isEn
+      ? ["Source Extraction", "Beat Sheet & Scene Outline", "Drafting Screenplay", "Formatting & Dialogue Review"]
+      : ["提取剧本原案与核心情境", "分场大纲与戏剧节拍规划", "撰写标准影视剧本", "场景格式与对白质检"];
+  }
+  if (action === "create_storyboard") {
+    return isEn
+      ? ["Shot Breakdown & Direction", "Keyframe Prompts", "Camera & Lighting Prompts", "Assembly"]
+      : ["镜头拆解与视听分镜规划", "关键帧画面描述生成", "机位与光影提示词生成", "分镜资产组装"];
+  }
+  if (action === "generate_cover") {
+    return isEn
+      ? ["Visual Prompt Engineering", "Image Model Rendering", "Save Cover Artifact"]
+      : ["提炼视觉意象与提示词", "调用图像模型渲染封面", "保存海报资产"];
+  }
+  return [];
+}
+
+function extractToolUpdateText(partialResult: unknown): string | undefined {
+  if (!partialResult || typeof partialResult !== "object") return undefined;
+  const content = (partialResult as { content?: unknown }).content;
+  if (Array.isArray(content)) {
+    const textPart = content.find(p => p && typeof p === "object" && (p as { type?: string }).type === "text" && typeof (p as { text?: unknown }).text === "string");
+    if (textPart) return (textPart as { text: string }).text;
+  }
+  if (typeof (partialResult as { text?: unknown }).text === "string") {
+    return (partialResult as { text: string }).text;
+  }
+  return undefined;
+}
+
+function updateToolStagesFromProgressText(stages: Array<{ label: string; status: "pending" | "active" | "completed" }> | undefined, text: string): void {
+  if (!stages || stages.length === 0) return;
+  const lower = text.toLowerCase();
+  let targetActiveIndex = -1;
+
+  if (lower.includes("outline") || lower.includes("大纲")) {
+    targetActiveIndex = 0;
+  } else if (lower.includes("draft") || lower.includes("chapter") || lower.includes("章节") || lower.includes("正文") || lower.includes("精修")) {
+    targetActiveIndex = stages.length >= 4 ? 1 : 0;
+  } else if (lower.includes("review") || lower.includes("审校") || lower.includes("质检") || lower.includes("复审")) {
+    targetActiveIndex = stages.length >= 4 ? 2 : 1;
+  } else if (lower.includes("package") || lower.includes("包装") || lower.includes("宣发") || lower.includes("synopsis") || lower.includes("物料")) {
+    targetActiveIndex = stages.length >= 4 ? 3 : 2;
+  } else if (lower.includes("cover") || lower.includes("封面") || lower.includes("海报")) {
+    targetActiveIndex = stages.length - 1;
+  }
+
+  if (targetActiveIndex >= 0 && targetActiveIndex < stages.length) {
+    for (let i = 0; i < stages.length; i++) {
+      if (i < targetActiveIndex) {
+        stages[i].status = "completed";
+      } else if (i === targetActiveIndex) {
+        stages[i].status = "active";
+      } else {
+        stages[i].status = "pending";
+      }
+    }
+  }
+}
+
 function formatTaskElapsed(ms: number, lang: StudioLanguage): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -1030,8 +1109,9 @@ interface CollectedToolExec {
   result?: string;
   details?: unknown;
   error?: string;
-  stages?: Array<{ label: string; status: "pending" | "completed" }>;
+  stages?: Array<{ label: string; status: "pending" | "active" | "completed" }>;
   logs?: string[];
+  latestProgressText?: string;
   startedAt: number;
   completedAt?: number;
 }
@@ -5112,6 +5192,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
               }
               if (event.type === "tool_execution_start") {
                 const actionId = capabilityActionId(event.toolName);
+                const stageLabels = defaultToolStages(event.toolName, surfaceLanguage);
                 const toolExec: CollectedToolExec = {
                   id: event.toolCallId,
                   tool: actionId,
@@ -5119,6 +5200,10 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
                   status: "running",
                   args: event.args as Record<string, unknown> | undefined,
                   startedAt: Date.now(),
+                  stages: stageLabels.map((label, index) => ({
+                    label,
+                    status: index === 0 ? "active" as const : "pending" as const,
+                  })),
                 };
                 continuedToolExecs.push(toolExec);
                 exec.logs = [...(exec.logs ?? []), `${toolExec.label}…`].slice(-80);
@@ -5128,16 +5213,40 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
                   id: event.toolCallId,
                   tool: event.toolName,
                   args: event.args,
-                  stages: [],
+                  stages: stageLabels,
                   background: true,
                   ...(sourceRequestId ? { sourceRequestId } : {}),
                 });
+              }
+              if (event.type === "tool_execution_update") {
+                const text = extractToolUpdateText((event as { partialResult?: unknown }).partialResult);
+                if (text) {
+                  const toolExec = continuedToolExecs.find((candidate) => candidate.id === event.toolCallId);
+                  if (toolExec) {
+                    toolExec.latestProgressText = text;
+                    toolExec.logs = [...(toolExec.logs ?? []), text].slice(-80);
+                    updateToolStagesFromProgressText(toolExec.stages, text);
+                    exec.logs = [...(exec.logs ?? []), text].slice(-80);
+                    void persistConfirmedTask(bookSession.sessionId, confirmedIntent, exec, sourceRequestId).catch(() => undefined);
+                  }
+                  broadcast("tool:update", {
+                    sessionId: streamSessionId,
+                    id: event.toolCallId,
+                    tool: event.toolName,
+                    text,
+                    stages: toolExec?.stages,
+                    background: true,
+                    ...(sourceRequestId ? { sourceRequestId } : {}),
+                    timestamp: Date.now(),
+                  });
+                }
               }
               if (event.type === "tool_execution_end") {
                 const toolExec = continuedToolExecs.find((candidate) => candidate.id === event.toolCallId);
                 if (toolExec) {
                   toolExec.status = event.isError ? "error" : "completed";
                   toolExec.completedAt = Date.now();
+                  toolExec.stages = toolExec.stages?.map(s => ({ ...s, status: "completed" as const }));
                   if (event.isError) toolExec.error = extractToolError(event.result);
                   else toolExec.result = summarizeToolResult(event.result);
                   toolExec.details = (event.result as { details?: unknown } | undefined)?.details;
@@ -5285,6 +5394,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
             if (event.type === "tool_execution_start") {
               const toolName = capabilityActionId(event.toolName);
               const args = event.args as Record<string, unknown> | undefined;
+              const stageLabels = defaultToolStages(event.toolName, surfaceLanguage);
 
               collectedToolExecs.push({
                 id: event.toolCallId,
@@ -5293,6 +5403,10 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
                 status: "running",
                 args,
                 startedAt: Date.now(),
+                stages: stageLabels.map((label, index) => ({
+                  label,
+                  status: index === 0 ? "active" as const : "pending" as const,
+                })),
               });
 
               if (!agentBookId && toolName === "create_book") {
@@ -5311,8 +5425,27 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
                 id: event.toolCallId,
                 tool: toolName,
                 args,
-                stages: [],
+                stages: stageLabels,
               });
+            }
+            if (event.type === "tool_execution_update") {
+              const text = extractToolUpdateText((event as { partialResult?: unknown }).partialResult);
+              if (text) {
+                const exec = collectedToolExecs.find(t => t.id === event.toolCallId);
+                if (exec) {
+                  exec.latestProgressText = text;
+                  exec.logs = [...(exec.logs ?? []), text].slice(-80);
+                  updateToolStagesFromProgressText(exec.stages, text);
+                }
+                broadcast("tool:update", {
+                  sessionId: streamSessionId,
+                  id: event.toolCallId,
+                  tool: event.toolName,
+                  text,
+                  stages: exec?.stages,
+                  timestamp: Date.now(),
+                });
+              }
             }
             if (event.type === "tool_execution_end") {
               const exec = collectedToolExecs.find(t => t.id === event.toolCallId);

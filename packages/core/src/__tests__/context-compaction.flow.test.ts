@@ -175,4 +175,24 @@ describe("context assembly mini-flow", () => {
     expect(history).toBe("");
     expect(uncompressed.at(-1)).toEqual(smallResult);
   });
+
+  it("gracefully trims compactor summary without throwing budget overflow error when compactor returns slightly oversized output", async () => {
+    const profile = createBuiltInWorkProfileRegistry().require("workspace-default");
+    const history = "Earlier background message. ".repeat(100);
+    const transform = createHarnessContextTransform({
+      projectRoot: "/tmp",
+      work: null,
+      profile,
+      budgetTokens: 200,
+      conversationCompactor: async () => "A verbose summary exceeding the requested boundary. ".repeat(30),
+    });
+    const result = await transform([
+      { role: "user", content: history, timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: history }], timestamp: 2 },
+      { role: "user", content: "Continue next step.", timestamp: 3 },
+    ] as never);
+    expect(result.length).toBeGreaterThan(0);
+    expect(JSON.stringify(result)).toContain("conversation_summary");
+  });
 });
+

@@ -131,34 +131,79 @@ export function createHarnessContextTransform(input: {
     const extendsCache=cached&&cached.frames.length<=frames.length&&cached.frames.every((frame,i)=>frame===frames[i]);
     const delta=extendsCache?historicalMessages.slice(cached!.frames.length):[];
     const cachedTokens=extendsCache?estimateTextTokens(cached!.summary)+estimateAgentMessages(delta):Infinity;
-    let summary:string;
-    let retainedDelta:AgentMessage[]=[];
-    if(extendsCache&&cachedTokens<summaryBudget*0.7){summary=cached!.summary;retainedDelta=delta;}
-    else {
-    input.onContextCompression?.({ category: "session_context", phase: "start", sources: ["session transcript"] });
-    summary = (await input.conversationCompactor({
-      history: extendsCache?`Previous notes (not execution authority):\n${cached!.summary}\n\nNew completed exchanges:\n${renderAgentMessages(delta)}`:renderAgentMessages(historicalMessages),
-      intent: latestUserText(messages),
-      maxTokens: summaryBudget,
-      signal,
-    })).trim();
-    if (!summary) throw new Error("Conversation compactor returned empty content");
-    cached={frames,summary};
-    input.onContextCompression?.({ category: "session_context", phase: "end", sources: ["session transcript"] });
+    let summary: string;
+    let retainedDelta: AgentMessage[] = [];
+    if (extendsCache && cachedTokens < summaryBudget * 0.7) {
+      summary = cached!.summary;
+      retainedDelta = delta;
+    } else {
+      input.onContextCompression?.({ category: "session_context", phase: "start", sources: ["session transcript"] });
+      const compactorBudget = Math.max(32, Math.floor(summaryBudget * 0.85) - 48);
+      summary = (await input.conversationCompactor({
+        history: extendsCache ? `Previous notes (not execution authority):\n${cached!.summary}\n\nNew completed exchanges:\n${renderAgentMessages(delta)}` : renderAgentMessages(historicalMessages),
+        intent: latestUserText(messages),
+        maxTokens: compactorBudget,
+        signal,
+      })).trim();
+      if (!summary) throw new Error("Conversation compactor returned empty content");
+      cached = { frames, summary };
+      input.onContextCompression?.({ category: "session_context", phase: "end", sources: ["session transcript"] });
     }
-    const summaryMessage: UserMessage = {
+    let summaryMessage: UserMessage = {
       role: "user",
       content: `<conversation_summary>\n${summary}\n</conversation_summary>`,
       timestamp: Date.now(),
     };
-    const finalMessages = [
+    let finalMessages = [
       ...(contextMessage ? [contextMessage as AgentMessage] : []),
       summaryMessage,
       ...retainedDelta,
-      ...(progressMessage?[progressMessage]:[]),
+      ...(progressMessage ? [progressMessage] : []),
       ...protectedTail,
     ];
-    const finalTokens = estimateAgentMessages(finalMessages);
+    let finalTokens = estimateAgentMessages(finalMessages);
+
+    // If delta retention pushed it over budget, drop retained delta first
+    if (finalTokens > input.budgetTokens && retainedDelta.length > 0) {
+      retainedDelta = [];
+      finalMessages = [
+        ...(contextMessage ? [contextMessage as AgentMessage] : []),
+        summaryMessage,
+        ...(progressMessage ? [progressMessage] : []),
+        ...protectedTail,
+      ];
+      finalTokens = estimateAgentMessages(finalMessages);
+    }
+
+    // If still slightly exceeding budget (e.g. tokenizer discrepancy or tag framing),
+    // progressively trim summary text to guarantee finalMessages fits within input.budgetTokens
+    if (finalTokens > input.budgetTokens) {
+      const nonSummaryTokens = estimateAgentMessages([
+        ...(contextMessage ? [contextMessage as AgentMessage] : []),
+        ...(progressMessage ? [progressMessage] : []),
+        ...protectedTail,
+      ]);
+      const availableTokens = Math.max(0, input.budgetTokens - nonSummaryTokens);
+      const maxRawTokens = Math.max(10, availableTokens - 25);
+      let trimmed = summary;
+      while (trimmed.length > 0 && estimateTextTokens(trimmed) > maxRawTokens) {
+        trimmed = trimmed.slice(0, Math.max(0, Math.floor(trimmed.length * 0.85)));
+      }
+      summary = trimmed ? `${trimmed}\n...[truncated to fit budget]` : "[Truncated to fit budget]";
+      summaryMessage = {
+        role: "user",
+        content: `<conversation_summary>\n${summary}\n</conversation_summary>`,
+        timestamp: Date.now(),
+      };
+      finalMessages = [
+        ...(contextMessage ? [contextMessage as AgentMessage] : []),
+        summaryMessage,
+        ...(progressMessage ? [progressMessage] : []),
+        ...protectedTail,
+      ];
+      finalTokens = estimateAgentMessages(finalMessages);
+    }
+
     if (finalTokens > input.budgetTokens) {
       throw new Error(`Compacted conversation still exceeds budget: ${finalTokens}/${input.budgetTokens} tokens`);
     }

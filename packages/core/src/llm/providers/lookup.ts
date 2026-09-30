@@ -68,3 +68,15 @@ export function listActiveTextModels(serviceId: string): InkosModel[] {
   if (!provider) return [];
   return provider.models.filter(isActiveTextModel);
 }
+
+/**
+ * 为未收录进配置卡片或未知模型的 context window 提供合理的推断默认值
+ */
+export function inferDefaultContextWindow(modelId?: string): number {
+  if (!modelId) return 128_000;
+  const lower = modelId.toLowerCase();
+  if (lower.includes("gemini")) return 1_000_000;
+  if (lower.includes("claude")) return 200_000;
+  if (lower.includes("deepseek") || lower.includes("gpt-4") || lower.includes("qwen") || lower.includes("glm") || lower.includes("kimi") || lower.includes("minimax")) return 128_000;
+  return 128_000;
+}

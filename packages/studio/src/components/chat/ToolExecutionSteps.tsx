@@ -12,6 +12,12 @@ import {
   ChevronDown,
   Wrench,
   Check,
+  BookOpen,
+  FileText,
+  Layers,
+  Lightbulb,
+  Sparkles,
+  Clock,
 } from "lucide-react";
 import { buildApiUrl } from "../../hooks/use-api";
 import { tr } from "../../lib/app-language";
@@ -89,7 +95,7 @@ function encodeProjectPath(path: string): string {
 }
 
 export interface GeneratedArtifactDetails {
-  readonly kind: "short_fiction_created" | "cover_generated" | "script_created" | "storyboard_created" | "interactive_film_created";
+  readonly kind: "short_fiction_created" | "short_fiction_revised" | "cover_generated" | "script_created" | "storyboard_created" | "interactive_film_created";
   readonly title?: string;
   readonly storyId?: string;
   readonly projectId?: string;
@@ -98,6 +104,10 @@ export interface GeneratedArtifactDetails {
   readonly coverPromptPath?: string;
   readonly coverImagePath?: string;
   readonly coverError?: string;
+  readonly chapterCount?: number;
+  readonly totalLength?: number;
+  readonly observationsCount?: number;
+  readonly observations?: ReadonlyArray<{ code?: string; summary?: string; category?: string }>;
   readonly specPath?: string;
   readonly scriptPath?: string;
   readonly storyboardPath?: string;
@@ -440,26 +450,54 @@ function ChapterStateResyncPreview({ exec }: { exec: ToolExecution }) {
 }
 
 export function getGeneratedArtifactDetails(exec: ToolExecution): GeneratedArtifactDetails | null {
-  if (!["short_fiction_run", "generate_cover", "script_create", "storyboard_create", "interactive_film_create"].includes(exec.tool)) return null;
+  if (!["short_fiction_run", "revise_short_fiction", "generate_cover", "script_create", "storyboard_create", "interactive_film_create"].includes(exec.tool)) return null;
   if (!exec.details || typeof exec.details !== "object") return null;
   const record = exec.details as Record<string, unknown>;
   if (
     record.kind !== "short_fiction_created"
+    && record.kind !== "short_fiction_revised"
     && record.kind !== "cover_generated"
     && record.kind !== "script_created"
     && record.kind !== "storyboard_created"
     && record.kind !== "interactive_film_created"
   ) return null;
+
+  const delivery = record.delivery && typeof record.delivery === "object" ? (record.delivery as Record<string, unknown>) : undefined;
+  const measurements = delivery?.measurements && typeof delivery.measurements === "object" ? (delivery.measurements as Record<string, unknown>) : undefined;
+  const chapterCount = typeof measurements?.chapterCount === "number" ? measurements.chapterCount : undefined;
+  const totalLength = typeof measurements?.totalLength === "number" ? measurements.totalLength : undefined;
+
+  const rawObs = Array.isArray(record.observations)
+    ? record.observations
+    : Array.isArray(delivery?.observations)
+      ? delivery.observations
+      : [];
+  const observations = rawObs.map((o: unknown) => {
+    if (o && typeof o === "object" && !Array.isArray(o)) {
+      const rec = o as Record<string, unknown>;
+      return {
+        code: typeof rec.code === "string" ? rec.code : undefined,
+        summary: typeof rec.summary === "string" ? rec.summary : typeof rec.message === "string" ? rec.message : undefined,
+        category: typeof rec.category === "string" ? rec.category : undefined,
+      };
+    }
+    return {};
+  });
+
   return {
     kind: record.kind,
-    title: stringField(record, "title"),
-    storyId: stringField(record, "storyId"),
+    title: stringField(record, "title") ?? (typeof measurements?.title === "string" ? measurements.title : undefined),
+    storyId: stringField(record, "storyId") ?? stringField(record, "workId"),
     projectId: stringField(record, "projectId"),
     finalMarkdownPath: stringField(record, "finalMarkdownPath"),
     salesPackagePath: stringField(record, "salesPackagePath"),
     coverPromptPath: stringField(record, "coverPromptPath"),
     coverImagePath: stringField(record, "coverImagePath"),
     coverError: stringField(record, "coverError"),
+    chapterCount,
+    totalLength,
+    observationsCount: observations.length,
+    observations,
     specPath: stringField(record, "specPath"),
     scriptPath: stringField(record, "scriptPath"),
     storyboardPath: stringField(record, "storyboardPath"),
@@ -538,33 +576,159 @@ function ScriptStoryboardResultPreview({ exec, onOpenFilmStudio }: { exec: ToolE
 }
 
 function ShortFictionResultPreview({ exec }: { exec: ToolExecution }) {
-  if (!["short_fiction_run", "generate_cover"].includes(exec.tool) || exec.status !== "completed") return null;
+  if (!["short_fiction_run", "revise_short_fiction", "generate_cover"].includes(exec.tool) || exec.status !== "completed") return null;
   const details = getGeneratedArtifactDetails(exec);
-  const coverPath = details?.coverImagePath;
-  const coverError = details?.coverError;
-  if (!coverPath || !/\.(png|jpe?g|webp)$/iu.test(coverPath)) {
-    if (!coverError) return null;
+  if (!details) return null;
+  const openProjectArtifact = useChatStore((s) => s.openProjectArtifact);
+
+  if (exec.tool === "generate_cover" && !details.finalMarkdownPath) {
+    const coverPath = details.coverImagePath;
+    const coverError = details.coverError;
+    if (!coverPath || !/\.(png|jpe?g|webp)$/iu.test(coverPath)) {
+      if (!coverError) return null;
+      return (
+        <div className="mx-3 mb-3 mt-1 rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          {tr("封面未生成：", "Cover not generated: ")}{coverError}
+        </div>
+      );
+    }
+    const coverUrl = buildApiUrl(`/project/files/${encodeProjectPath(coverPath)}`);
+    if (!coverUrl) return null;
+    const title = details.title ?? details.storyId ?? tr("短篇封面", "Short fiction cover");
     return (
-      <div className="mx-3 mb-3 mt-1 rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-        {tr("封面未生成：", "Cover not generated: ")}{coverError}
+      <div className="mx-3 mb-3 mt-1 overflow-hidden rounded-xl border border-border/40 bg-background/70">
+        <img
+          src={coverUrl}
+          alt={title}
+          className="block max-h-[360px] w-full object-contain bg-muted/20"
+          loading="lazy"
+        />
+        <div className="border-t border-border/40 px-3 py-2 text-[11px] text-muted-foreground break-all">
+          {coverPath}
+        </div>
       </div>
     );
   }
 
-  const coverUrl = buildApiUrl(`/project/files/${encodeProjectPath(coverPath)}`);
-  if (!coverUrl) return null;
-  const title = details?.title ?? details?.storyId ?? tr("短篇封面", "Short fiction cover");
+  const isRevision = exec.tool === "revise_short_fiction" || details.kind === "short_fiction_revised";
+  const title = details.title || details.storyId || tr("短篇作品", "Short Fiction Manuscript");
+  const coverPath = details.coverImagePath;
+  const coverUrl = coverPath && /\.(png|jpe?g|webp)$/iu.test(coverPath)
+    ? buildApiUrl(`/project/files/${encodeProjectPath(coverPath)}`)
+    : null;
 
   return (
-    <div className="mx-3 mb-3 mt-1 overflow-hidden rounded-xl border border-border/40 bg-background/70">
-      <img
-        src={coverUrl}
-        alt={title}
-        className="block max-h-[360px] w-full object-contain bg-muted/20"
-        loading="lazy"
-      />
-      <div className="border-t border-border/40 px-3 py-2 text-[11px] text-muted-foreground break-all">
-        {coverPath}
+    <div className="mx-3 mb-3 mt-1 rounded-xl border border-primary/20 bg-card/90 shadow-xs overflow-hidden">
+      <div className="flex items-center justify-between px-3.5 py-2.5 bg-primary/5 border-b border-border/40">
+        <div className="flex items-center gap-2 min-w-0">
+          <BookOpen size={16} className="text-primary shrink-0" />
+          <span className="font-semibold text-sm text-foreground truncate">{title}</span>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+            isRevision
+              ? "bg-indigo-500/15 text-indigo-600 dark:text-indigo-400"
+              : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+          }`}>
+            {isRevision ? tr("修订已交付", "Revised & Delivered") : tr("全篇已交付", "Delivered")}
+          </span>
+        </div>
+      </div>
+
+      <div className="p-3.5">
+        <div className="flex flex-col sm:flex-row gap-3.5 items-start">
+          {coverUrl && (
+            <div className="shrink-0 w-24 h-32 rounded-lg overflow-hidden border border-border/40 shadow-xs bg-muted/20">
+              <img
+                src={coverUrl}
+                alt={title}
+                className="w-full h-full object-cover cursor-pointer hover:scale-105 transition-transform"
+                onClick={() => coverPath && openProjectArtifact(coverPath)}
+                title={tr("点击查看大图", "Click to view full image")}
+                loading="lazy"
+              />
+            </div>
+          )}
+
+          <div className="min-w-0 flex-1 space-y-2.5">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              {details.chapterCount !== undefined && details.chapterCount > 0 && (
+                <span className="inline-flex items-center gap-1 bg-background/80 border border-border/40 px-2 py-0.5 rounded-md font-medium text-foreground">
+                  <Layers size={13} className="text-primary" />
+                  {details.chapterCount} {tr("个章节", "chapters")}
+                </span>
+              )}
+              {details.totalLength !== undefined && details.totalLength > 0 && (
+                <span className="inline-flex items-center gap-1 bg-background/80 border border-border/40 px-2 py-0.5 rounded-md font-medium text-foreground">
+                  <FileText size={13} className="text-primary" />
+                  {details.totalLength.toLocaleString()} {tr("字", "chars")}
+                </span>
+              )}
+              {details.observationsCount !== undefined && (
+                <span className={`inline-flex items-center gap-1 border px-2 py-0.5 rounded-md font-medium ${
+                  details.observationsCount === 0
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                    : "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                }`}>
+                  <CheckCircle2 size={13} />
+                  {details.observationsCount === 0
+                    ? tr("审校全数通过 (0 项待改)", "Quality checks passed (0 observations)")
+                    : tr(`${details.observationsCount} 项审校建议`, `${details.observationsCount} quality suggestion(s)`)}
+                </span>
+              )}
+            </div>
+
+            {!coverUrl && details.coverError && (
+              <div className="text-[12px] text-muted-foreground/80 bg-muted/30 px-2 py-1 rounded">
+                {tr("封面提示：", "Cover notice: ")}{details.coverError}
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2 pt-0.5">
+              {details.finalMarkdownPath && (
+                <button
+                  type="button"
+                  onClick={() => openProjectArtifact(details.finalMarkdownPath!)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition-opacity cursor-pointer shadow-xs"
+                >
+                  <BookOpen size={13} />
+                  {tr("阅读全篇正文", "Read Manuscript")}
+                </button>
+              )}
+              {details.salesPackagePath && (
+                <button
+                  type="button"
+                  onClick={() => openProjectArtifact(details.salesPackagePath!)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-background/80 px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-muted transition-colors cursor-pointer"
+                >
+                  <Sparkles size={13} className="text-amber-500" />
+                  {tr("宣发物料", "Sales Package")}
+                </button>
+              )}
+              {coverUrl && coverPath && (
+                <button
+                  type="button"
+                  onClick={() => openProjectArtifact(coverPath)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-background/80 px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+                >
+                  {tr("查看高清封面", "View Cover")}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {details.observations && details.observations.length > 0 && (
+          <div className="mt-3 pt-2.5 border-t border-border/30">
+            <ChapterObservations
+              observations={details.observations.map(o => ({
+                code: o.code ?? "REVIEW",
+                summary: o.summary ?? tr("未分类审校建议", "Unclassified observation"),
+              }))}
+              title={tr("文学与连贯性审校观察：", "Review observations:")}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -867,7 +1031,84 @@ function hasStructuredResultPreview(exec: ToolExecution): boolean {
   if (getPlayToolDetails(exec)?.sceneText) return true;
   if (getChapterRevisionDetails(exec)) return true;
   if (getChapterStateResyncDetails(exec)) return true;
+  if (getGeneratedArtifactDetails(exec)) return true;
   return Boolean(getPlayEditDetails(exec));
+}
+
+function parseChapterProgress(text?: string): string | null {
+  if (!text) return null;
+  const matchWithTotal = text.match(/（(\d+\/\d+)）/) || text.match(/第\s*(\d+\/\d+)\s*章/);
+  if (matchWithTotal) {
+    return `${matchWithTotal[1]} 章`;
+  }
+  const matchSaved = text.match(/(?:已保存|已完成|Saved)\s*(\d+\/\d+)/i);
+  if (matchSaved) {
+    return `${matchSaved[1]} 章`;
+  }
+  const matchEn = text.match(/chapter\s*(\d+\/\d+)/i);
+  if (matchEn) {
+    return `Ch. ${matchEn[1]}`;
+  }
+  const matchSingle = text.match(/第\s*(\d+)\s*章/);
+  if (matchSingle) {
+    return `第 ${matchSingle[1]} 章`;
+  }
+  return null;
+}
+
+function LiveProgressBanner({ exec, elapsedMs }: { exec: ToolExecution; elapsedMs: number }) {
+  if (exec.status !== "running" && exec.status !== "processing") return null;
+
+  const activeStage = exec.stages?.find(s => s.status === "active");
+  const completedStagesCount = exec.stages?.filter(s => s.status === "completed").length ?? 0;
+  const totalStagesCount = exec.stages?.length ?? 0;
+  const chapterProgress = parseChapterProgress(exec.latestProgressText);
+
+  const percent = totalStagesCount > 0
+    ? Math.max(8, Math.min(95, Math.round(((completedStagesCount + (activeStage ? 0.5 : 0)) / totalStagesCount) * 100)))
+    : 15;
+
+  return (
+    <div className="mx-3 mb-2.5 mt-0.5 rounded-xl border border-primary/25 bg-primary/5 p-3">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <Loader2 size={15} className="animate-spin text-primary shrink-0" />
+          <span className="text-sm font-semibold text-primary truncate">
+            {activeStage ? activeStage.label : tr("正在执行...", "In progress...")}
+          </span>
+          {totalStagesCount > 0 && (
+            <span className="text-xs text-muted-foreground shrink-0">
+              ({completedStagesCount + 1}/{totalStagesCount})
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 text-xs font-mono text-primary/80 shrink-0">
+          <Clock size={12} />
+          <span>{formatDuration(exec.startedAt, exec.startedAt + elapsedMs)}</span>
+        </div>
+      </div>
+
+      {totalStagesCount > 0 && (
+        <div className="w-full bg-primary/15 rounded-full h-1.5 mb-2 overflow-hidden">
+          <div
+            className="bg-primary h-1.5 rounded-full transition-all duration-500 ease-out"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span className="truncate font-mono">
+          {exec.latestProgressText || tr("正在初始化执行环境与模型上下文...", "Initializing execution environment...")}
+        </span>
+        {chapterProgress && (
+          <span className="shrink-0 font-medium text-foreground bg-primary/10 px-1.5 py-0.5 rounded text-[11px]">
+            {chapterProgress}
+          </span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function isPipelineTool(tool: string): boolean {
@@ -972,6 +1213,7 @@ function PipelineExecution({
           <ChevronDown size={16} className={`text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
         </div>
       </CollapsibleTrigger>
+      {isActive && <LiveProgressBanner exec={exec} elapsedMs={elapsedMs} />}
       <ProposedActionPreview
         exec={exec}
         onProposedAction={onProposedAction}

@@ -342,9 +342,9 @@ async function produceShort(
     outlineMarkdown = resumedOutline;
     await ensureShortWork(root, storyId, options.title?.trim() || storyId, language);
     workTitle = options.title?.trim() || (await loadWorkManifest(root, storyId)).title;
-    options.onProgress?.("Resuming from existing outline (skipping outline stages)...");
+    options.onProgress?.(language === "en" ? "Resuming from existing outline (skipping outline stages)..." : "正在从已有大纲恢复（跳过大纲规划）...");
   } else {
-    options.onProgress?.("Creating short fiction outline...");
+    options.onProgress?.(language === "en" ? "Creating short fiction outline..." : "正在构思短篇大纲与剧情规划...");
     const outlineAgent = new ShortFictionOutlineAgent(options.runtimes.planner);
     const outlineV1 = await outlineAgent.createOutline({
       title: options.title,
@@ -410,7 +410,7 @@ async function produceShort(
     await writeShortProductionState(root,baseDir,productionState);
   }
   try {
-    options.onProgress?.("Writing full short fiction draft...");
+    options.onProgress?.(language === "en" ? "Writing full short fiction draft..." : "正在批量撰写正文章节草稿...");
     const writer = new ShortFictionWriterAgent(options.runtimes.writer);
     const persistDraftBatch = async (
       draft: ShortFictionBatchDraft,
@@ -481,7 +481,7 @@ async function produceShort(
     }
     const inputHash = shortInputHash({ draft: draftV1, outline: outlineMarkdown, intent: productionState.intent });
     if (stopAfter !== "package") {
-    options.onProgress?.("Reviewing completed short fiction...");
+    options.onProgress?.(language === "en" ? "Reviewing completed short fiction..." : "正在进行连续性与文学质量审校...");
     const draftReviewer = new ShortFictionDraftReviewerAgent(options.runtimes.draftReview);
     const requestHash = shortReviewRequestHash({...options, chapterCount, charsPerChapter, language});
     try {
@@ -527,7 +527,7 @@ async function produceShort(
     if (stopAfter === "review") return stageResult("review", [draftReviewWarning ? "reviews/draft-warning.md" : "reviews/draft-v001.md", "production-state.json"]);
     if(!reviewOrPackageOnly)await writeFinalArtifacts(root, baseDir, finalDraft, language);
 
-    options.onProgress?.("Generating synopsis and cover prompt...");
+    options.onProgress?.(language === "en" ? "Generating synopsis and cover prompt..." : "正在生成故事梗概与宣发物料...");
     await refreshDelivery();
     const packager = new ShortFictionPackagingAgent(options.runtimes.package);
     try {
@@ -574,7 +574,7 @@ async function produceShort(
         coverErrorCode: "SHORT_COVER_PACKAGE_REQUIRED",
         coverError: "Cover generation requires a completed sales package with a story-grounded visual brief. Retry packaging, then resume cover generation.",
       }
-    : await generateCoverArtifact({
+    : (options.onProgress?.(language === "en" ? "Generating story cover image..." : "正在绘制故事封面海报..."), await generateCoverArtifact({
         root,
         baseDir,
         salesPackage,
@@ -589,7 +589,7 @@ async function produceShort(
       }).catch((error: unknown) => {
         options.signal?.throwIfAborted();
         return { coverError: String(error) };
-      });
+      }));
 
   if (options.cover !== false) {
     productionState = { ...productionState, stages: { ...productionState.stages, cover: {
@@ -724,6 +724,7 @@ async function reviseShortFictionWithLock(options: ShortFictionRunOptions & { re
     ...(savedText && options.restartPendingRevision ? [textWrite(join(".inkos", "short-revisions", "archive", `${randomUUID()}.json`), savedText)] : []),
     textWrite(checkpointPath, JSON.stringify(checkpoint, null, 2)),
   ] });
+  options.onProgress?.(language === "en" ? "Planning revisions based on review observations..." : "正在分析审校意见与规划修订方案...");
   const revised = checkpoint.finalization?.result ?? await new ShortFictionWriterAgent(options.runtimes.writer).reviseDraft({
     direction:options.direction,language,chapterCount,
     charsPerChapter: revisionOptions.charsPerChapter ?? (language==="en"?SHORT_FICTION_EN_DEFAULT_WORDS_PER_CHAPTER:SHORT_FICTION_DEFAULT_CHARS_PER_CHAPTER),
@@ -732,7 +733,9 @@ async function reviseShortFictionWithLock(options: ShortFictionRunOptions & { re
     onRevisionProgress:async(progress)=>{
       checkpoint = { ...checkpoint, progress };
       await commitAtomicFileSet({rootDir:options.projectRoot,writes:[textWrite(checkpointPath,JSON.stringify(checkpoint,null,2))]});
-      options.onProgress?.(`Short revision progress: ${progress.completed.length}/${progress.plan.chapters.length} chapters`);
+      options.onProgress?.(language === "en"
+        ? `Short revision progress: ${progress.completed.length}/${progress.plan.chapters.length} chapters`
+        : `正在精修目标章节：已完成 ${progress.completed.length}/${progress.plan.chapters.length} 章`);
     },
   }).catch(error => {
     const failure = error instanceof Error ? error : new Error(String(error));
@@ -749,6 +752,7 @@ async function reviseShortFictionWithLock(options: ShortFictionRunOptions & { re
     textWrite(checkpointPath, JSON.stringify(checkpoint, null, 2)),
   ]});
   try {
+    options.onProgress?.(language === "en" ? "Re-evaluating draft continuity and updating final package..." : "正在重新复审全文连贯性并更新宣发物料...");
     const result=await produceShort(revisionOptions,options.projectRoot,options.storyId,revised.draft);
     const committedDraft=ShortFictionBatchDraftSchema.parse(JSON.parse(await readFile(safeChildPath(options.projectRoot,join(base,"final","short-story.json")),"utf8")));
     const beforeChapters=new Map(draft.chapters.map(chapter=>[chapter.number,chapter]));

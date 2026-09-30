@@ -505,7 +505,10 @@ export function attachSessionStreamListeners({
           const parts = [...(stream.parts ?? [])];
 
           const stages: PipelineStage[] | undefined = Array.isArray(data.stages) && data.stages.length > 0
-            ? (data.stages as string[]).map((label) => ({ label, status: "pending" as const }))
+            ? (data.stages as string[]).map((label, index) => ({
+                label,
+                status: index === 0 ? "active" as const : "pending" as const,
+              }))
             : undefined;
 
           parts.push({
@@ -529,6 +532,36 @@ export function attachSessionStreamListeners({
               ? { isChatStreaming: false }
               : {}),
           };
+        }),
+      }));
+    } catch {
+      // ignore
+    }
+  });
+
+  streamEs.addEventListener("tool:update", (event: MessageEvent) => {
+    try {
+      const data = event.data ? JSON.parse(event.data) : null;
+      if (!sessionMatchesEvent(sessionId, data) || !data?.id) return;
+      set((state) => ({
+        sessions: updateSession(state.sessions, sessionId, (runtime) => {
+          const messages = updateToolPartById(runtime.messages, data.id as string, (previous) => {
+            const execution = { ...previous };
+            if (data.text) {
+              execution.latestProgressText = data.text;
+              execution.logs = [...(execution.logs ?? []), data.text].slice(-80);
+              if (execution.stages && execution.stages.length > 0) {
+                const stages = execution.stages.map((s) => ({ ...s }));
+                updateStagesFromText(stages, data.text);
+                execution.stages = stages;
+              }
+            }
+            if (Array.isArray(data.stages) && data.stages.length > 0) {
+              execution.stages = data.stages;
+            }
+            return execution;
+          });
+          return messages ? { messages } : {};
         }),
       }));
     } catch {
@@ -752,4 +785,33 @@ function applyContextCompressionToParts(
   if (phase !== "start") execution.completedAt = Date.now();
   if (phase === "error") execution.error = data.message ?? `${compressionLabel(category)}${tr("失败", " failed")}`;
   if (!existing) parts.push({ type: "tool", execution });
+}
+
+function updateStagesFromText(stages: PipelineStage[], text: string): void {
+  const lower = text.toLowerCase();
+  let targetActiveIndex = -1;
+
+  if (lower.includes("outline") || lower.includes("大纲")) {
+    targetActiveIndex = 0;
+  } else if (lower.includes("draft") || lower.includes("chapter") || lower.includes("章节") || lower.includes("正文") || lower.includes("精修")) {
+    targetActiveIndex = stages.length >= 4 ? 1 : 0;
+  } else if (lower.includes("review") || lower.includes("审校") || lower.includes("质检") || lower.includes("复审")) {
+    targetActiveIndex = stages.length >= 4 ? 2 : 1;
+  } else if (lower.includes("package") || lower.includes("包装") || lower.includes("宣发") || lower.includes("synopsis") || lower.includes("物料")) {
+    targetActiveIndex = stages.length >= 4 ? 3 : 2;
+  } else if (lower.includes("cover") || lower.includes("封面") || lower.includes("海报")) {
+    targetActiveIndex = stages.length - 1;
+  }
+
+  if (targetActiveIndex >= 0 && targetActiveIndex < stages.length) {
+    for (let i = 0; i < stages.length; i++) {
+      if (i < targetActiveIndex) {
+        stages[i].status = "completed";
+      } else if (i === targetActiveIndex) {
+        stages[i].status = "active";
+      } else {
+        stages[i].status = "pending";
+      }
+    }
+  }
 }

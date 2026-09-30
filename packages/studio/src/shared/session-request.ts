@@ -52,6 +52,7 @@ export interface ToolExecution {
   error?: string;
   stages?: PipelineStage[];
   logs?: string[];
+  latestProgressText?: string;
   startedAt: number;
   completedAt?: number;
   // 后台生产任务的工具卡（来自带 background 标记的 tool:start 或任务快照恢复）。

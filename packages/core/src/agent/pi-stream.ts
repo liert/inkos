@@ -6,6 +6,7 @@ import type {
   AssistantMessage,
   AssistantMessageEventStream,
   Context,
+  Message,
   Model,
   SimpleStreamOptions,
   ToolCall,
@@ -24,6 +25,164 @@ import {
 } from "../llm/agent-trajectory.js";
 import { fetchWithProxy } from "../utils/proxy-fetch.js";
 
+function extractToolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (part && typeof part === "object" && part.type === "text" && typeof (part as { text?: unknown }).text === "string") {
+          return (part as { text: string }).text;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
+export function isGeminiModel(model?: { id?: unknown; provider?: unknown; api?: unknown } | null): boolean {
+  if (!model) return false;
+  const id = typeof model.id === "string" ? model.id.toLowerCase() : "";
+  const provider = typeof model.provider === "string" ? model.provider.toLowerCase() : "";
+  const api = typeof model.api === "string" ? model.api.toLowerCase() : "";
+  return id.includes("gemini") || provider === "google" || api === "google-generative-ai";
+}
+
+export function shouldFoldToolCall(toolCall: ToolCall, model: Model<Api> | { id?: unknown; provider?: unknown; api?: unknown }): boolean {
+  // Only Gemini / Google models strictly enforce thought signature requirements on function calls.
+  // Replaying synthetic or unsigned tool calls to Gemini causes HTTP 400 (missing thought_signature).
+  if (isGeminiModel(model)) {
+    // If it has a native thought signature, it is valid
+    if ((toolCall as { thoughtSignature?: unknown }).thoughtSignature) return false;
+
+    // If it is from OpenAI Responses API with an fc_ item ID, it is cached by the proxy
+    const id = typeof toolCall.id === "string" ? toolCall.id : "";
+    if (id.includes("|")) {
+      const itemId = id.split("|")[1];
+      if (itemId && itemId.startsWith("fc_")) return false;
+    }
+
+    // Otherwise, it is unsigned / synthetic and Gemini will reject it
+    return true;
+  }
+
+  return false;
+}
+
+export function sanitizeMessagesForModel<T extends Message | Record<string, any>>(messages: T[], model: Model<Api> | { id?: unknown; provider?: unknown; api?: unknown }): T[] {
+  const result: T[] = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg || typeof msg !== "object") continue;
+
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      const toolCalls = msg.content.filter((part): part is ToolCall => part && typeof part === "object" && part.type === "toolCall");
+      const foldedToolCalls = toolCalls.filter((tc) => shouldFoldToolCall(tc, model));
+
+      if (foldedToolCalls.length > 0) {
+        const foldedIds = new Set(foldedToolCalls.map((tc) => tc.id));
+        const remainingContent = msg.content.filter((part: any) => {
+          if (part && typeof part === "object" && part.type === "toolCall") {
+            return !foldedIds.has(part.id);
+          }
+          return true;
+        });
+
+        // Collect matching tool results from subsequent messages
+        const collectedResults: Array<{ name: string; id: string; content: string }> = [];
+        let nextIndex = i + 1;
+        while (nextIndex < messages.length) {
+          const next = messages[nextIndex];
+          if (!next || typeof next !== "object") break;
+
+          if (next.role === "toolResult") {
+            const raw = next as unknown as Record<string, unknown>;
+            const callId = typeof raw.toolCallId === "string" ? raw.toolCallId : "";
+            if (foldedIds.has(callId)) {
+              const name = typeof raw.toolName === "string" ? raw.toolName : "tool";
+              const text = extractToolResultText(raw.content);
+              collectedResults.push({ name, id: callId, content: text });
+              nextIndex++;
+              continue;
+            }
+          } else if (next.role === "tool") {
+            const raw = next as unknown as Record<string, unknown>;
+            const callId = typeof raw.tool_call_id === "string" ? raw.tool_call_id : "";
+            if (foldedIds.has(callId)) {
+              const name = typeof raw.name === "string" ? raw.name : "tool";
+              const text = typeof raw.content === "string" ? raw.content : extractToolResultText(raw.content);
+              collectedResults.push({ name, id: callId, content: text });
+              nextIndex++;
+              continue;
+            }
+          }
+          break;
+        }
+
+        // If the assistant message still has other content (text or remaining valid toolCalls), keep it
+        const hasVisibleContent = remainingContent.some(
+          (part: any) => (part && typeof part === "object" && part.type === "text" && typeof part.text === "string" && part.text.trim()) || (part && typeof part === "object" && part.type === "toolCall"),
+        );
+        if (hasVisibleContent) {
+          result.push({
+            ...msg,
+            content: remainingContent,
+          } as T);
+        }
+
+        // Now place the historical tool results
+        if (collectedResults.length > 0) {
+          const lines = collectedResults.flatMap((r) => [
+            `- ${r.name} (${r.id}):`,
+            r.content || "(empty tool result)",
+          ]);
+          const historicalText = [
+            "[Historical tool results]",
+            "These are completed historical tool results. They are state context, not a new user request.",
+            ...lines,
+          ].join("\n");
+
+          const lastInResult = result[result.length - 1];
+          if (!hasVisibleContent && lastInResult && lastInResult.role === "user") {
+            if (typeof lastInResult.content === "string") {
+              lastInResult.content = `${lastInResult.content}\n\n${historicalText}`;
+            } else if (Array.isArray(lastInResult.content)) {
+              lastInResult.content = [
+                ...lastInResult.content,
+                { type: "text", text: `\n\n${historicalText}` },
+              ];
+            }
+          } else {
+            result.push({
+              role: "user",
+              content: historicalText,
+              timestamp: Date.now(),
+            } as unknown as T);
+          }
+        }
+
+        i = nextIndex - 1;
+        continue;
+      }
+    }
+
+    result.push(msg);
+  }
+
+  return result;
+}
+
+export function sanitizeContextForModel(context: Context, model: Model<Api>): Context {
+  const sanitizedMessages = sanitizeMessagesForModel(context.messages, model);
+  return {
+    ...context,
+    messages: sanitizedMessages,
+  };
+}
+
 /**
  * The single Pi transport boundary used by both conversational and worker
  * agents. Pi keeps native tool calls; InkOS adds context guards, trajectory
@@ -36,6 +195,7 @@ export function guardedPiStream<TApi extends Api>(
   emptyRetries = 1,
   deadlineOptions?: StreamDeadlineOptions,
 ): AssistantMessageEventStream {
+  const activeContext = sanitizeContextForModel(context, model);
   const reservedOutputTokens = Number.isFinite(options?.maxTokens)
     ? options!.maxTokens!
     : Number.isFinite(model.maxTokens)
@@ -44,17 +204,17 @@ export function guardedPiStream<TApi extends Api>(
   assertWithinContextWindow({
     piModel: model,
     model: model.id,
-    estimatedInputTokens: estimatePiContextTokens(context),
+    estimatedInputTokens: estimatePiContextTokens(activeContext),
     reservedOutputTokens,
   });
   const modelCall = beginAgentModelCall();
-  recordExecutionEvidence("model-call-started", { trace: modelCall, model: model.id, context, maxTokens: reservedOutputTokens });
+  recordExecutionEvidence("model-call-started", { trace: modelCall, model: model.id, context: activeContext, maxTokens: reservedOutputTokens });
   const traceHeaders = agentTrajectoryHeaders(model.baseUrl, modelCall, 1, {
     effort: String(options?.reasoning ?? (model.reasoning ? "enabled" : "disabled")),
   });
   return observeModelStream(model, modelCall?.modelCallId, guardAssistantMessageStream(
     model,
-    (signal) => streamSimple(model, context, {
+    (signal) => streamSimple(model, activeContext, {
       ...options,
       headers: { ...(options?.headers ?? {}), ...traceHeaders },
       onPayload: async (payload, activeModel) => {
@@ -86,7 +246,8 @@ export function guardedPiStream<TApi extends Api>(
     options?.signal,
     deadlineOptions,
   ), emptyRetries > 0 && !options?.signal?.aborted ? () => guardedPiStream(model, context, options, emptyRetries - 1, deadlineOptions) : undefined,
-  (options as SimpleStreamOptions & { toolChoice?: unknown } | undefined)?.toolChoice);
+  (options as SimpleStreamOptions & { toolChoice?: unknown } | undefined)?.toolChoice,
+  activeContext);
 }
 
 /**
@@ -102,6 +263,7 @@ export function guardedPiNonStreaming<TApi extends Api>(
   emptyRetries = 1,
 ): AssistantMessageEventStream {
   if (model.api !== "openai-completions") return guardedPiStream(model, context, options);
+  const activeContext = sanitizeContextForModel(context, model);
   const reservedOutputTokens = Number.isFinite(options?.maxTokens)
     ? options!.maxTokens!
     : Number.isFinite(model.maxTokens)
@@ -110,7 +272,7 @@ export function guardedPiNonStreaming<TApi extends Api>(
   assertWithinContextWindow({
     piModel: model,
     model: model.id,
-    estimatedInputTokens: estimatePiContextTokens(context),
+    estimatedInputTokens: estimatePiContextTokens(activeContext),
     reservedOutputTokens,
   });
   const eventStream = createAssistantMessageEventStream();
@@ -118,10 +280,10 @@ export function guardedPiNonStreaming<TApi extends Api>(
   const modelCall = beginAgentModelCall();
   void (async () => {
     try {
-      recordExecutionEvidence("model-call-started", { trace: modelCall, model: model.id, context, maxTokens: reservedOutputTokens });
+      recordExecutionEvidence("model-call-started", { trace: modelCall, model: model.id, context: activeContext, maxTokens: reservedOutputTokens });
       const payload: Record<string, unknown> = {
         model: model.id,
-        messages: toOpenAIChatMessages(context),
+        messages: toOpenAIChatMessages(activeContext),
         stream: false,
       };
       if (context.tools?.length) {
@@ -167,7 +329,7 @@ export function guardedPiNonStreaming<TApi extends Api>(
           deadline.stop();
         }
       }, { signal: options?.signal });
-      populateAssistantMessage(output, json);
+      populateAssistantMessage(output, json, context);
       emitCompletedMessage(eventStream, output);
     } catch (error) {
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
@@ -177,20 +339,36 @@ export function guardedPiNonStreaming<TApi extends Api>(
     }
   })();
   return observeModelStream(model, modelCall?.modelCallId, eventStream, emptyRetries > 0 && !options?.signal?.aborted ? () => guardedPiNonStreaming(model, context, options, proxyUrl, emptyRetries - 1) : undefined,
-    (options as SimpleStreamOptions & { toolChoice?: unknown } | undefined)?.toolChoice);
+    (options as SimpleStreamOptions & { toolChoice?: unknown } | undefined)?.toolChoice,
+    context);
 }
 
 const discardedToolOutputs = new WeakSet<AssistantMessage>();
 
-function missingRequiredTool(message: AssistantMessage, choice: unknown): boolean {
-  const selected = choice && typeof choice === "object"
-    ? choice as { type?: string; name?: string; function?: { name?: string } } : undefined;
-  const name = selected?.type === "function" ? selected.function?.name ?? selected.name : undefined;
-  if (choice !== "required" && !name) return false;
-  return !message.content.some(part => part.type === "toolCall" && (!name || part.name === name));
+function normalizeToolName(name: string, context?: Context): string {
+  if (!name || !context?.tools?.length) return name;
+  if (context.tools.some((t) => t.name === name)) return name;
+  const matched = context.tools.find((t) => t.name.endsWith(`__${name}`));
+  return matched ? matched.name : name;
 }
 
-function observeModelStream(model: Model<Api>, modelCallId: string | undefined, source: AssistantMessageEventStream, retry?: () => AssistantMessageEventStream, toolChoice?: unknown): AssistantMessageEventStream {
+function missingRequiredTool(message: AssistantMessage, choice: unknown, context?: Context): boolean {
+  const selected = choice && typeof choice === "object"
+    ? choice as { type?: string; name?: string; function?: { name?: string } } : undefined;
+  let name = selected?.type === "function" ? selected.function?.name ?? selected.name : undefined;
+  if (name) name = normalizeToolName(name, context);
+  if (choice !== "required" && !name) return false;
+  return !message.content.some(part => part.type === "toolCall" && (!name || part.name === name || normalizeToolName(part.name, context) === name));
+}
+
+function observeModelStream(
+  model: Model<Api>,
+  modelCallId: string | undefined,
+  source: AssistantMessageEventStream,
+  retry?: () => AssistantMessageEventStream,
+  toolChoice?: unknown,
+  context?: Context,
+): AssistantMessageEventStream {
   const output = createAssistantMessageEventStream();
   let started = false;
   const forward = (event: Parameters<typeof output.push>[0]) => {
@@ -204,7 +382,24 @@ function observeModelStream(model: Model<Api>, modelCallId: string | undefined, 
     try {
       let pendingStart: Parameters<typeof output.push>[0] | undefined;
       for await (const event of source) {
-        if ("partial" in event) lastPartial = event.partial;
+        if ("partial" in event && event.partial) {
+          lastPartial = event.partial;
+          for (const part of event.partial.content) {
+            if (part.type === "toolCall") {
+              part.name = normalizeToolName(part.name, context);
+            }
+          }
+        }
+        if (event.type === "toolcall_end" && event.toolCall) {
+          event.toolCall.name = normalizeToolName(event.toolCall.name, context);
+        }
+        if (event.type === "done" && event.message) {
+          for (const part of event.message.content) {
+            if (part.type === "toolCall") {
+              part.name = normalizeToolName(part.name, context);
+            }
+          }
+        }
         if (event.type === "start") { pendingStart = event; continue; }
         if (event.type === "error" && retry && event.error.stopReason !== "aborted"
           && (event.error as AssistantMessage & {errorCode?: string}).errorCode === "MODEL_STREAM_INACTIVITY") {
@@ -230,7 +425,7 @@ function observeModelStream(model: Model<Api>, modelCallId: string | undefined, 
           return;
         }
         if (event.type === "done" && event.message.stopReason !== "length"
-          && !discardedToolOutputs.has(event.message) && missingRequiredTool(event.message, toolChoice)) {
+          && !discardedToolOutputs.has(event.message) && missingRequiredTool(event.message, toolChoice, context)) {
           recordExecutionEvidence("model-call-completed", { modelCallId, status: "invalid_tool_choice", response: event.message });
           if (retry) {
             recordExecutionEvidence("model-call-retry", { modelCallId, reason: "MODEL_REQUIRED_TOOL_MISSING" });
@@ -299,6 +494,15 @@ function toOpenAIChatMessages(context: Context): Array<Record<string, unknown>> 
       messages.push({ role: "user", content: openAIUserContent(message.content) });
       continue;
     }
+    if ((message as { role?: unknown }).role === "system") {
+      const systemContent = typeof message.content === "string"
+        ? message.content
+        : Array.isArray(message.content)
+          ? (message.content as Array<{ text?: string }>).map((p) => p.text ?? "").join("\n")
+          : String(message.content ?? "");
+      messages.push({ role: "system", content: systemContent });
+      continue;
+    }
     if (message.role === "assistant") {
       const text = message.content
         .filter((part) => part.type === "text")
@@ -346,7 +550,7 @@ function openAIUserContent(content: Context["messages"][number] extends infer _T
   ));
 }
 
-function populateAssistantMessage(output: AssistantMessage, json: Record<string, any>): void {
+function populateAssistantMessage(output: AssistantMessage, json: Record<string, any>, context?: Context): void {
   const choice = Array.isArray(json.choices) ? json.choices[0] : undefined;
   const message = choice?.message ?? {};
   const finishReason = String(choice?.finish_reason ?? "stop");
@@ -369,7 +573,7 @@ function populateAssistantMessage(output: AssistantMessage, json: Record<string,
     output.content.push({
       type: "toolCall",
       id: typeof item.id === "string" && item.id ? item.id : `call_${randomUUID()}`,
-      name: item.function.name,
+      name: normalizeToolName(item.function.name, context),
       arguments: parseToolArguments(item.function.arguments),
     });
   }

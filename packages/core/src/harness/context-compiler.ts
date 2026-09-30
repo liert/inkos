@@ -132,21 +132,22 @@ export async function compileContext(input: {
   }
   if (!input.compiler) throw new ContextCompilationRequiredError(totalTokens, input.budgetTokens);
   const availableTokens = input.budgetTokens - protectedTokens;
+  const compilerBudget = Math.max(32, Math.floor(availableTokens * 0.85) - 32);
   const compiled = await input.compiler({
     recipeId: input.recipe.id,
     intent: input.request.intent,
-    maxTokens: availableTokens,
+    maxTokens: compilerBudget,
     fragments: compressibleFragments,
     signal: input.request.signal,
   });
-  const content = compiled.content.trim();
+  let content = compiled.content.trim();
   if (!content) throw new Error("Semantic context compiler returned empty content");
   const knownIds = new Set(compressibleFragments.map((fragment) => fragment.id));
   const sourceIds = [...new Set(compiled.sourceIds)];
   if (sourceIds.some((id) => !knownIds.has(id))) {
     throw new Error("Semantic context compiler returned an unknown source id");
   }
-  const compiledFragment: ContextFragment = {
+  let compiledFragment: ContextFragment = {
     id: `compiled-${input.recipe.id}`,
     source: `compiled:${input.recipe.id}`,
     content,
@@ -154,8 +155,20 @@ export async function compileContext(input: {
     priority: 0,
     pointer: sourceIds.join(", "),
   };
-  const finalFragments = [...protectedFragments, compiledFragment];
-  const finalTokens = estimateFragments(finalFragments);
+  let finalFragments = [...protectedFragments, compiledFragment];
+  let finalTokens = estimateFragments(finalFragments);
+  if (finalTokens > input.budgetTokens) {
+    const availableForContent = Math.max(10, input.budgetTokens - protectedTokens - 32);
+    while (content.length > 0 && estimateTextTokens(content) > availableForContent) {
+      content = content.slice(0, Math.max(0, Math.floor(content.length * 0.85)));
+    }
+    compiledFragment = {
+      ...compiledFragment,
+      content: content ? `${content}\n...[truncated to fit budget]` : "[Truncated to fit budget]",
+    };
+    finalFragments = [...protectedFragments, compiledFragment];
+    finalTokens = estimateFragments(finalFragments);
+  }
   if (finalTokens > input.budgetTokens) {
     throw new Error(`Compiled context still exceeds budget: ${finalTokens}/${input.budgetTokens} tokens`);
   }

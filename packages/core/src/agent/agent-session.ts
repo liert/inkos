@@ -68,9 +68,10 @@ import {
 } from "./skill-tool.js";
 import { withExecutionEvidence } from "../harness/execution-evidence.js";
 import { opaqueConversationId, runWithAgentTrajectory } from "../llm/agent-trajectory.js";
-import { guardedPiNonStreaming, guardedPiStream } from "./pi-stream.js";
+import { guardedPiNonStreaming, guardedPiStream, sanitizeMessagesForModel } from "./pi-stream.js";
 import { splitTextByEstimatedTokens } from "../llm/semantic-input.js";
 import { estimateTextTokens } from "../llm/provider.js";
+import { inferDefaultContextWindow } from "../llm/providers/lookup.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -642,8 +643,11 @@ function assistantErrorMessage(message: AssistantMessage | undefined): string | 
       : undefined;
 }
 
-export function convertAgentMessagesForModel(messages: AgentMessage[]): Message[] {
-  return messages.flatMap((message): Message[] => {
+export function convertAgentMessagesForModel(
+  messages: AgentMessage[],
+  target?: Model<Api> | { id?: unknown; provider?: unknown; api?: unknown },
+): Message[] {
+  const filtered = messages.flatMap((message): Message[] => {
     if (!message || typeof message !== "object" || !("role" in message)) return [];
     const raw = message as { role?: unknown; content?: unknown };
     if (raw.role === "user" || raw.role === "assistant" || raw.role === "toolResult") {
@@ -651,6 +655,7 @@ export function convertAgentMessagesForModel(messages: AgentMessage[]): Message[
     }
     return [];
   });
+  return target ? sanitizeMessagesForModel(filtered, target) : filtered;
 }
 
 /**
@@ -729,9 +734,10 @@ function agentOutputBudget(model: Model<Api>): number {
 }
 
 function agentContextBudget(model: Model<Api>): number {
+  const fallbackWindow = inferDefaultContextWindow(model.id);
   const contextWindow = typeof model.contextWindow === "number" && model.contextWindow > 0
     ? model.contextWindow
-    : 32_000;
+    : fallbackWindow;
   const reservedOutput = agentOutputBudget(model);
   const transportOverhead = Math.max(2048, Math.floor(contextWindow * 0.05));
   return Math.max(2000, contextWindow - reservedOutput - transportOverhead);
@@ -1125,7 +1131,7 @@ async function runAgentSessionUnlocked(
         }),
         onContextCompression,
       }),
-      convertToLlm: convertAgentMessagesForModel,
+      convertToLlm: (msgs) => convertAgentMessagesForModel(msgs, model),
       streamFn: (streamModel, context, options) => {
         // Pi snapshots its tool table per run. Resume with the new Work's actual
         // Profile before another model call, rather than continuing with stale tools.

@@ -2,10 +2,9 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { Type } from "@sinclair/typebox";
 import { expect, it } from "vitest";
-import { createLLMClient } from "../llm/provider.js";
+import { createLLMClient, type StreamProgress } from "../llm/provider.js";
 import { BaseAgent } from "../agents/base.js";
-import type { StreamProgress } from "../llm/provider.js";
-import { guardedPiStream, guardedPiNonStreaming } from "../agent/pi-stream.js";
+import { guardedPiStream, guardedPiNonStreaming, shouldFoldToolCall, sanitizeMessagesForModel, isGeminiModel } from "../agent/pi-stream.js";
 import { withExecutionEvidence } from "../harness/execution-evidence.js";
 import { compileHarnessContextText } from "../agent/agent-session.js";
 import { runWorkerAgentTool } from "../agent/worker-agent.js";
@@ -303,3 +302,165 @@ it('requests only prose when keeping choices and retains option regeneration as 
   expect(requests.map(r=>Object.keys(r.tools[0].function.parameters.properties).sort())).toEqual([['sceneText'],['sceneText','suggestedActions']]);
  }finally{server.closeAllConnections();await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
 },15000);
+
+it.each([true, false])('normalizes unprefixed tool calls to match declared capability tool names (stream=%s)', async (streaming) => {
+  const server = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    const call = { id: 'call-1', type: 'function', function: { name: 'short_fiction_run', arguments: '{"title":"Test"}' } };
+    if (streaming) {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.write(`data: ${JSON.stringify({ id: 'chunk', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ ...call, index: 0 }] }, finish_reason: null }] })}\n\n`);
+      response.end(`data: ${JSON.stringify({ id: 'chunk', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`);
+    } else {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', tool_calls: [call] }, finish_reason: 'tool_calls' }] }));
+    }
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  try {
+    const client = createLLMClient({ service: 'custom', provider: 'openai', configSource: 'studio', model: 'fixture', apiKey: 'fixture',
+      baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, apiFormat: 'chat', stream: streaming, temperature: 0, thinkingBudget: 0 });
+    const context = {
+      messages: [{ role: 'user' as const, content: 'Run short story.', timestamp: 1 }],
+      tools: [{ name: 'short-fiction__short_fiction_run', description: 'Run short fiction', parameters: Type.Object({ title: Type.String() }) }],
+    };
+    const options = { apiKey: 'fixture', maxTokens: 128 };
+    const events = streaming ? guardedPiStream(client._piModel!, context, options) : guardedPiNonStreaming(client._piModel!, context, options);
+    for await (const _event of events) {}
+    const result = await events.result();
+    expect(result.stopReason).toBe('toolUse');
+    expect(result.content).toEqual([{
+      type: 'toolCall',
+      id: 'call-1',
+      name: 'short-fiction__short_fiction_run',
+      arguments: { title: 'Test' },
+    }]);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}, 15000);
+
+it('detects Gemini models correctly across providers and model IDs', () => {
+  expect(isGeminiModel({ id: 'gemini-3.8-flash-high', provider: 'openai', api: 'openai-responses' })).toBe(true);
+  expect(isGeminiModel({ id: 'gemini-2.5-pro', provider: 'openai', api: 'openai-completions' })).toBe(true);
+  expect(isGeminiModel({ id: 'google/gemini-flash-1.5', provider: 'openrouter', api: 'openai-completions' })).toBe(true);
+  expect(isGeminiModel({ id: 'custom-model', provider: 'google', api: 'google-generative-ai' })).toBe(true);
+  expect(isGeminiModel({ id: 'gpt-4o', provider: 'openai', api: 'openai-completions' })).toBe(false);
+  expect(isGeminiModel({ id: 'claude-3-5-sonnet', provider: 'anthropic', api: 'anthropic-messages' })).toBe(false);
+  expect(isGeminiModel(null)).toBe(false);
+});
+
+it('shouldFoldToolCall folds unsigned tool calls for Gemini and preserves signed ones', () => {
+  const geminiModel = { id: 'gemini-3.8-flash-high', provider: 'openai', api: 'openai-responses' };
+  const claudeModel = { id: 'claude-3-5-sonnet', provider: 'anthropic', api: 'anthropic-messages' };
+
+  // Synthetic or work-transition tool calls are unsigned for Gemini
+  expect(shouldFoldToolCall({ id: 'work-transition-123', name: 'workspace__create_work', arguments: {} } as any, geminiModel as any)).toBe(true);
+  expect(shouldFoldToolCall({ id: 'call-simple', name: 'workspace__create_work', arguments: {} } as any, geminiModel as any)).toBe(true);
+
+  // Signed tool calls with native thoughtSignature are preserved
+  expect(shouldFoldToolCall({ id: 'call-1', name: 'tool', arguments: {}, thoughtSignature: 'valid_sig' } as any, geminiModel as any)).toBe(false);
+
+  // Responses API tool calls with fc_ item ID cached on the server are preserved
+  expect(shouldFoldToolCall({ id: 'call_123|fc_abc456', name: 'tool', arguments: {} } as any, geminiModel as any)).toBe(false);
+
+  // For non-Gemini models, standard tool calls are not folded
+  expect(shouldFoldToolCall({ id: 'call-simple', name: 'tool', arguments: {} } as any, claudeModel as any)).toBe(false);
+  expect(shouldFoldToolCall({ id: 'call_123', name: 'tool', arguments: {} } as any, claudeModel as any)).toBe(false);
+});
+
+it('sanitizeMessagesForModel folds unsigned Gemini tool calls into historical results in user message', () => {
+  const geminiModel = { id: 'gemini-3.8-flash-high', provider: 'openai', api: 'openai-responses' };
+  const messages = [
+    { role: 'user' as const, content: '现在重新尝试一下', timestamp: 1 },
+    {
+      role: 'assistant' as const,
+      content: [{
+        type: 'toolCall' as const,
+        id: 'work-transition-5f1fcf32',
+        name: 'workspace__create_work',
+        arguments: { title: '痕检师的自杀报告' },
+      }],
+      timestamp: 2,
+    },
+    {
+      role: 'toolResult' as const,
+      toolCallId: 'work-transition-5f1fcf32',
+      toolName: 'workspace__create_work',
+      content: [{ type: 'text' as const, text: 'Created 痕检师的自杀报告' }],
+      isError: false,
+      timestamp: 3,
+    },
+  ];
+
+  const sanitized = sanitizeMessagesForModel(messages as any, geminiModel as any);
+  expect(sanitized).toHaveLength(1);
+  expect(sanitized[0]?.role).toBe('user');
+  expect(sanitized[0]?.content).toContain('现在重新尝试一下');
+  expect(sanitized[0]?.content).toContain('[Historical tool results]');
+  expect(sanitized[0]?.content).toContain('workspace__create_work');
+  expect(sanitized[0]?.content).toContain('Created 痕检师的自杀报告');
+});
+
+it.each([true, false])('guardedPi transport folds synthetic tool calls before sending to Gemini endpoint (stream=%s)', async (streaming) => {
+  const received: Array<{ messages: Array<{ role: string; content?: string }> }> = [];
+  const server = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    received.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    const reply = { role: 'assistant', content: 'Continuing novel draft.' };
+    if (streaming) {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.write(`data: ${JSON.stringify({ id: 'c1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: reply, finish_reason: null }] })}\n\n`);
+      response.end(`data: ${JSON.stringify({ id: 'c1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+    } else {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: reply, finish_reason: 'stop' }] }));
+    }
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  try {
+    const client = createLLMClient({ service: 'custom', provider: 'openai', configSource: 'studio', model: 'gemini-3.8-flash-high', apiKey: 'fixture',
+      baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, apiFormat: 'chat', stream: streaming, temperature: 0, thinkingBudget: 0 });
+    const context = {
+      messages: [
+        { role: 'user' as const, content: '现在重新尝试一下', timestamp: 1 },
+        {
+          role: 'assistant' as const,
+          content: [{
+            type: 'toolCall' as const,
+            id: 'work-transition-abc',
+            name: 'workspace__create_work',
+            arguments: { title: '痕检师的自杀报告' },
+          }],
+          timestamp: 2,
+        },
+        {
+          role: 'toolResult' as const,
+          toolCallId: 'work-transition-abc',
+          toolName: 'workspace__create_work',
+          content: [{ type: 'text' as const, text: 'Created work successfully' }],
+          isError: false,
+          timestamp: 3,
+        },
+      ],
+      tools: [],
+    };
+    const options = { apiKey: 'fixture', maxTokens: 128 };
+    const events = streaming ? guardedPiStream(client._piModel!, context as any, options) : guardedPiNonStreaming(client._piModel!, context as any, options);
+    for await (const _event of events) {}
+    const result = await events.result();
+    expect(result.stopReason).toBe('stop');
+    expect(received).toHaveLength(1);
+    // The request sent to the model server should NOT contain raw function/tool calls for work-transition
+    const sentMessages = received[0]!.messages;
+    expect(sentMessages.some((m) => m.role === 'tool' || (m as any).tool_calls?.length)).toBe(false);
+    expect(sentMessages[0]?.content).toContain('现在重新尝试一下');
+    expect(sentMessages[0]?.content).toContain('[Historical tool results]');
+    expect(sentMessages[0]?.content).toContain('workspace__create_work');
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}, 15000);
+
