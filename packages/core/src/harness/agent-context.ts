@@ -27,6 +27,7 @@ export function createHarnessContextTransform(input: {
   readonly work: WorkManifest | null;
   readonly profile: WorkProfile;
   readonly budgetTokens: number;
+  readonly compactionThreshold?: number;
   readonly semanticCompiler?: SemanticContextCompiler;
   readonly conversationCompactor?: ConversationCompactor;
   readonly onContextCompression?: ContextCompressionCallback;
@@ -64,23 +65,31 @@ export function createHarnessContextTransform(input: {
     },
   });
 
+  const activeCompactionThreshold = typeof input.compactionThreshold === "number" && input.compactionThreshold > 0
+    ? Math.min(input.budgetTokens, input.compactionThreshold)
+    : Math.min(input.budgetTokens, 65_536);
+
   let cached: {frames:string[];summary:string} | undefined;
   return async (messages, signal) => {
     const lastUserIndex = findLastUserIndex(messages);
     let historicalMessages = lastUserIndex > 0 ? messages.slice(0, lastUserIndex) : [];
     let protectedTail = lastUserIndex >= 0 ? messages.slice(lastUserIndex) : messages;
-    // Completed reads in the current tool loop can exceed a model window even
-    // with a short user request. Preserve the request; compact the complete
+    // Completed reads in the current tool loop can exceed working memory even
+    // with a short user request. Preserve the request; compact completed
     // closed tool exchanges, keeping their full evidence in the transcript.
-    if (lastUserIndex >= 0 && estimateAgentMessages(protectedTail) > input.budgetTokens * 0.6
+    const activeTailLimit = Math.max(100, Math.floor(activeCompactionThreshold * 0.6));
+    if (lastUserIndex >= 0 && estimateAgentMessages(protectedTail) > activeTailLimit
       && input.conversationCompactor && closedToolExchanges(protectedTail.slice(1))) {
-      let boundary=protectedTail.length;
-      for(let i=protectedTail.length-1;i>=1;i--){
-        if(protectedTail[i]?.role==='assistant'&&closedToolExchanges(protectedTail.slice(i))
-          &&estimateAgentMessages(protectedTail.slice(i))<input.budgetTokens*0.2)boundary=i;
+      let boundary = protectedTail.length;
+      const recentSliceLimit = Math.max(50, Math.floor(activeCompactionThreshold * 0.25));
+      for (let i = protectedTail.length - 1; i >= 1; i--) {
+        if (protectedTail[i]?.role === 'assistant' && closedToolExchanges(protectedTail.slice(i))
+          && estimateAgentMessages(protectedTail.slice(i)) < recentSliceLimit) {
+          boundary = i;
+        }
       }
-      historicalMessages = [...historicalMessages, ...protectedTail.slice(1,boundary)];
-      protectedTail = [messages[lastUserIndex]!,...protectedTail.slice(boundary)];
+      historicalMessages = [...historicalMessages, ...protectedTail.slice(1, boundary)];
+      protectedTail = [messages[lastUserIndex]!, ...protectedTail.slice(boundary)];
     }
     const tailTokens = estimateAgentMessages(protectedTail);
     const workBudget = input.budgetTokens - tailTokens;
@@ -108,13 +117,24 @@ export function createHarnessContextTransform(input: {
           timestamp: Date.now(),
         }
       : null;
-    const progress=executionProgress(messages.slice(lastUserIndex>=0?lastUserIndex+1:0),Math.max(100,Math.min(8000,Math.floor(input.budgetTokens*0.6))));
-    const progressMessage:UserMessage|undefined=progress?{role:'user',content:`<host_execution_progress>\n${progress}\n</host_execution_progress>`,timestamp:Date.now()}:undefined;
-    const withContext = [...(contextMessage ? [contextMessage as AgentMessage] : []),
-      ...(progressMessage ? [progressMessage] : []), ...messages];
-    if (estimateAgentMessages(withContext) <= input.budgetTokens) return withContext;
+    const progress = executionProgress(
+      messages.slice(lastUserIndex >= 0 ? lastUserIndex + 1 : 0),
+      Math.max(100, Math.min(8000, Math.floor(activeCompactionThreshold * 0.4))),
+    );
+    const progressMessage: UserMessage | undefined = progress
+      ? { role: 'user', content: `<host_execution_progress>\n${progress}\n</host_execution_progress>`, timestamp: Date.now() }
+      : undefined;
+    const withContext = [
+      ...(contextMessage ? [contextMessage as AgentMessage] : []),
+      ...(progressMessage ? [progressMessage] : []),
+      ...messages,
+    ];
+    if (estimateAgentMessages(withContext) <= activeCompactionThreshold) return withContext;
 
     if (!input.conversationCompactor || historicalMessages.length === 0) {
+      if (estimateAgentMessages(withContext) <= input.budgetTokens) {
+        return withContext;
+      }
       throw new ProtectedContextOverflowError(
         estimateAgentMessages(contextMessage ? [contextMessage as AgentMessage, ...protectedTail] : protectedTail),
         input.budgetTokens,
@@ -122,11 +142,15 @@ export function createHarnessContextTransform(input: {
     }
 
     const workTokens = contextMessage ? estimateAgentMessages([contextMessage as AgentMessage]) : 0;
-    const progressTokens=progressMessage?estimateAgentMessages([progressMessage]):0;
-    const summaryBudget = input.budgetTokens - workTokens - tailTokens-progressTokens;
-    if (summaryBudget <= 0) {
+    const progressTokens = progressMessage ? estimateAgentMessages([progressMessage]) : 0;
+    const remainingHardBudget = input.budgetTokens - workTokens - tailTokens - progressTokens;
+    if (remainingHardBudget <= 0) {
       throw new ProtectedContextOverflowError(workTokens + tailTokens, input.budgetTokens);
     }
+    const summaryBudget = Math.max(
+      100,
+      Math.min(remainingHardBudget, Math.max(1000, Math.floor(activeCompactionThreshold * 0.25))),
+    );
     const frames=historicalMessages.map(m=>renderAgentMessages([m]));
     const extendsCache=cached&&cached.frames.length<=frames.length&&cached.frames.every((frame,i)=>frame===frames[i]);
     const delta=extendsCache?historicalMessages.slice(cached!.frames.length):[];

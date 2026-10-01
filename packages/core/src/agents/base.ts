@@ -155,7 +155,7 @@ export async function prepareWorkerMessages(
       const compiled = await compileContext({
         recipe: { id: `${profile.contextRecipe?.id ?? profile.id}-${workerId}${professionalGuidance?'':'-task'}`, sourceIds: professionalGuidance ? [...new Set(["task", ...(guidance?["skills"]:[]), ...(profile.contextRecipe?.sourceIds ?? [])])] : ['task'] }, sources,
         request: { projectRoot: context.projectRoot ?? "", work, profile, actionId: workerId, intent: query, signal: context.signal },
-        budgetTokens: Math.max(1, window - (maxTokens ?? context.client.defaults.maxTokens) - 2048),
+        budgetTokens: Math.max(1, window - (maxTokens ?? context.client.defaults?.maxTokens ?? 4096) - 2048),
       });
       recordExecutionEvidence("context-compiled", { worker: workerId, trace: compiled.trace });
       const original = new Map(messages.map((message,index)=>[`message-${index}`,message]));

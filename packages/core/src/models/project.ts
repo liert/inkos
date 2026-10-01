@@ -7,6 +7,7 @@ export const CustomModelConfigSchema = z.object({
   temperature: z.number().min(0).max(2).optional(),
   topP: z.number().min(0).max(1).optional(),
   thinkingBudget: z.number().int().min(0).optional(),
+  compactionThreshold: z.number().int().positive().optional(),
 }).strict();
 
 export type CustomModelConfig = z.infer<typeof CustomModelConfigSchema>;
@@ -21,6 +22,7 @@ export const LLMServiceEntrySchema = z.object({
   contextWindow: z.number().int().positive().optional(),
   maxOutput: z.number().int().positive().optional(),
   thinkingBudget: z.number().int().min(0).optional(),
+  compactionThreshold: z.number().int().positive().optional(),
   modelConfigs: z.record(CustomModelConfigSchema).optional(),
   apiFormat: z.enum(LLM_API_FORMATS).optional(),
   stream: z.boolean().optional(),
@@ -45,6 +47,7 @@ export const LLMConfigSchema = z.object({
   contextWindow: z.number().int().positive().optional(),
   maxOutput: z.number().int().positive().optional(),
   thinkingBudget: z.number().int().min(0).default(0),
+  compactionThreshold: z.number().int().positive().optional(),
   extra: z.record(z.unknown()).optional(),
   headers: z.record(z.string()).optional(),
   apiFormat: z.enum(LLM_API_FORMATS).default("chat"),

@@ -194,5 +194,80 @@ describe("context assembly mini-flow", () => {
     expect(result.length).toBeGreaterThan(0);
     expect(JSON.stringify(result)).toContain("conversation_summary");
   });
+
+  it("triggers compaction at working threshold (e.g. 64k) even when budgetTokens is 1,000,000", async () => {
+    const profile = createBuiltInWorkProfileRegistry().require("workspace-default");
+    let compacted = false;
+    const transform = createHarnessContextTransform({
+      projectRoot: "/tmp",
+      work: null,
+      profile,
+      budgetTokens: 900_000, // 1M context model
+      compactionThreshold: 2000, // custom or default working threshold
+      conversationCompactor: async () => {
+        compacted = true;
+        return "Compacted earlier work.";
+      },
+    });
+
+    const pastContent = "Previous turn content paragraph. ".repeat(200);
+    const result = await transform([
+      { role: "user", content: pastContent, timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: pastContent }], timestamp: 2 },
+      { role: "user", content: "Next command.", timestamp: 3 },
+    ] as never);
+
+    expect(compacted).toBe(true);
+    expect(JSON.stringify(result)).toContain("conversation_summary");
+    expect(JSON.stringify(result)).toContain("Next command");
+  });
+
+  it("permits large single turn without throwing when it exceeds compactionThreshold but fits in model budgetTokens", async () => {
+    const profile = createBuiltInWorkProfileRegistry().require("workspace-default");
+    const transform = createHarnessContextTransform({
+      projectRoot: "/tmp",
+      work: null,
+      profile,
+      budgetTokens: 900_000,
+      compactionThreshold: 2000,
+      conversationCompactor: async () => "summary",
+    });
+
+    const singleTurnLarge = "Large initial document. ".repeat(150);
+    const result = await transform([
+      { role: "user", content: singleTurnLarge, timestamp: 1 },
+    ] as never);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe("user");
+  });
+
+  it("compacts older tool exchanges in a long multi-tool episode when tail exceeds working threshold", async () => {
+    const profile = createBuiltInWorkProfileRegistry().require("workspace-default");
+    let historySentToCompactor = "";
+    const transform = createHarnessContextTransform({
+      projectRoot: "/tmp",
+      work: null,
+      profile,
+      budgetTokens: 900_000,
+      compactionThreshold: 2000,
+      conversationCompactor: async (request) => {
+        historySentToCompactor = request.history;
+        return "Tool 1 finished draft. Tool 2 finished review.";
+      },
+    });
+
+    const user = { role: "user", content: "Write complete novel.", timestamp: 1 };
+    const toolCall1 = { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "tool1", arguments: {} }] };
+    const toolRes1 = { role: "toolResult", toolCallId: "t1", toolName: "tool1", content: [{ type: "text", text: "Chapter 1 full text. ".repeat(150) }] };
+    const toolCall2 = { role: "assistant", content: [{ type: "toolCall", id: "t2", name: "tool2", arguments: {} }] };
+    const toolRes2 = { role: "toolResult", toolCallId: "t2", toolName: "tool2", content: [{ type: "text", text: "Chapter 2 full text. ".repeat(150) }] };
+
+    const result = await transform([user, toolCall1, toolRes1, toolCall2, toolRes2] as never);
+
+    expect(historySentToCompactor).toContain("tool1");
+    expect(JSON.stringify(result)).toContain("conversation_summary");
+    expect(result.some((m) => m.role === "user" && typeof m.content === "string" && m.content.includes("Write complete novel"))).toBe(true);
+  });
 });
 

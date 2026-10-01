@@ -1669,6 +1669,7 @@ interface CustomModelConfig {
   temperature?: number;
   topP?: number;
   thinkingBudget?: number;
+  compactionThreshold?: number;
 }
 
 interface ServiceConfigEntry {
@@ -1681,6 +1682,7 @@ interface ServiceConfigEntry {
   contextWindow?: number;
   maxOutput?: number;
   thinkingBudget?: number;
+  compactionThreshold?: number;
   modelConfigs?: Record<string, CustomModelConfig>;
   apiFormat?: LLMApiFormat;
   stream?: boolean;
@@ -1925,6 +1927,7 @@ function mergeServiceConfig(existing: ServiceConfigEntry[], updates: ServiceConf
       ...(update.temperature === undefined && previous?.temperature ? { temperature: previous.temperature } : {}),
       ...(update.topP === undefined && previous?.topP ? { topP: previous.topP } : {}),
       ...(update.thinkingBudget === undefined && previous?.thinkingBudget ? { thinkingBudget: previous.thinkingBudget } : {}),
+      ...(update.compactionThreshold === undefined && previous?.compactionThreshold ? { compactionThreshold: previous.compactionThreshold } : {}),
     });
   }
   return [...merged.values()];
@@ -4969,6 +4972,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
               temperature: modelOverride?.temperature ?? configuredEntry?.temperature,
               topP: modelOverride?.topP ?? configuredEntry?.topP,
               thinkingBudget: modelOverride?.thinkingBudget ?? configuredEntry?.thinkingBudget,
+              compactionThreshold: modelOverride?.compactionThreshold ?? configuredEntry?.compactionThreshold,
             },
           );
           resolvedModel = resolved.model;
@@ -5009,6 +5013,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
                 temperature: modelOverride?.temperature ?? firstService.temperature,
                 topP: modelOverride?.topP ?? firstService.topP,
                 thinkingBudget: modelOverride?.thinkingBudget ?? firstService.thinkingBudget,
+                compactionThreshold: modelOverride?.compactionThreshold ?? firstService.compactionThreshold,
               },
             );
             resolvedModel = resolved.model;
@@ -5041,6 +5046,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
                     temperature: modelOverride?.temperature ?? configuredEntry?.temperature,
                     topP: modelOverride?.topP ?? configuredEntry?.topP,
                     thinkingBudget: modelOverride?.thinkingBudget ?? configuredEntry?.thinkingBudget,
+                    compactionThreshold: modelOverride?.compactionThreshold ?? configuredEntry?.compactionThreshold,
                   },
                 );
                 resolvedModel = resolved.model;
@@ -5082,6 +5088,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
             temperature: modelConfigOverride?.temperature ?? configuredEntry?.temperature ?? config.llm.temperature,
             topP: modelConfigOverride?.topP ?? configuredEntry?.topP ?? (config.llm as any).topP,
             thinkingBudget: modelConfigOverride?.thinkingBudget ?? configuredEntry?.thinkingBudget ?? config.llm.thinkingBudget,
+            compactionThreshold: modelConfigOverride?.compactionThreshold ?? configuredEntry?.compactionThreshold ?? (config.llm as any).compactionThreshold,
           } as any)
         : client;
       // Only a structured action request can start a production task. Free text

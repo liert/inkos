@@ -63,12 +63,14 @@ interface ServiceConfigEntry {
   readonly contextWindow?: number;
   readonly maxOutput?: number;
   readonly thinkingBudget?: number;
+  readonly compactionThreshold?: number;
   readonly modelConfigs?: Readonly<Record<string, {
     readonly contextWindow?: number;
     readonly maxOutput?: number;
     readonly temperature?: number;
     readonly topP?: number;
     readonly thinkingBudget?: number;
+    readonly compactionThreshold?: number;
   }>>;
   readonly apiFormat?: LLMApiFormat;
   readonly stream?: boolean;
@@ -352,6 +354,7 @@ function applyServiceEntry(llm: Record<string, unknown>, entry: ServiceConfigEnt
   if (entry.contextWindow !== undefined) llm.contextWindow = entry.contextWindow;
   if (entry.maxOutput !== undefined) llm.maxOutput = entry.maxOutput;
   if (entry.thinkingBudget !== undefined) llm.thinkingBudget = entry.thinkingBudget;
+  if (entry.compactionThreshold !== undefined) llm.compactionThreshold = entry.compactionThreshold;
 
   if (entry.apiFormat !== undefined) llm.apiFormat = entry.apiFormat;
   else if (transportDefaults?.apiFormat !== undefined) llm.apiFormat = transportDefaults.apiFormat;
@@ -377,6 +380,7 @@ function applyCommonEnv(
   if (env.INKOS_LLM_CONTEXT_WINDOW) llm.contextWindow = Number.parseInt(env.INKOS_LLM_CONTEXT_WINDOW, 10);
   if (env.INKOS_LLM_MAX_OUTPUT) llm.maxOutput = Number.parseInt(env.INKOS_LLM_MAX_OUTPUT, 10);
   if (env.INKOS_LLM_THINKING_BUDGET) llm.thinkingBudget = Number.parseInt(env.INKOS_LLM_THINKING_BUDGET, 10);
+  if (env.INKOS_LLM_COMPACTION_THRESHOLD) llm.compactionThreshold = Number.parseInt(env.INKOS_LLM_COMPACTION_THRESHOLD, 10);
   if (env.INKOS_LLM_PROXY_URL) llm.proxyUrl = env.INKOS_LLM_PROXY_URL;
   if (env.INKOS_LLM_API_FORMAT) llm.apiFormat = env.INKOS_LLM_API_FORMAT;
   if (env.INKOS_LLM_STREAM) llm.stream = parseBoolean(env.INKOS_LLM_STREAM);

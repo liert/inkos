@@ -45,7 +45,7 @@ describe("FanficCanonImporter", () => {
       usage: ZERO_USAGE,
     });
 
-    const source = `${"前段".repeat(600)}TAIL_CANON_MARKER`;
+    const source = `${"前段".repeat(400)}TAIL_CANON_MARKER`;
     const result = await agent.importFromText(source, "长原作", "canon");
 
     expect(chatSpy).toHaveBeenCalledTimes(2);

@@ -540,9 +540,12 @@ export function __resetFixedTemperatureWarnings(): void {
 
 export function estimateTextTokens(text: string): number {
   if (!text) return 0;
-  const cjk = text.match(/[\u3400-\u9fff]/g)?.length ?? 0;
+  // Modern BPE / SentencePiece tokenizers (Gemini, Claude, GPT-4o) encode CJK
+  // characters using 1.5 to 2.2 tokens per character. Counting 1 char = 1 token
+  // severely underestimates CJK and leads to HTTP 400 context overflow errors.
+  const cjk = text.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff]/g)?.length ?? 0;
   const nonCjk = text.length - cjk;
-  return Math.ceil(cjk + nonCjk / 4);
+  return Math.ceil(cjk * 1.5 + nonCjk / 3.5);
 }
 
 function estimateJsonTokens(value: unknown): number {
@@ -1499,11 +1502,11 @@ export async function chatCompletion(
     temperature: clampTemperatureForModel(
       client.service,
       model,
-      options?.temperature ?? client.defaults.temperature,
+      options?.temperature ?? client.defaults?.temperature ?? 0.7,
     ),
-    maxTokens: options?.maxTokens ?? client.defaults.maxTokens,
-    topP: options?.topP ?? client.defaults.topP,
-    extra: client.defaults.extra,
+    maxTokens: options?.maxTokens ?? client.defaults?.maxTokens ?? 4096,
+    topP: options?.topP ?? client.defaults?.topP,
+    extra: client.defaults?.extra ?? {},
   };
   const onStreamProgress = options?.onStreamProgress;
   const onTextDelta = options?.onTextDelta;
@@ -1515,11 +1518,10 @@ export async function chatCompletion(
     return await withTransientLLMRetry(
       async (attempt) => {
         signal?.throwIfAborted();
+        const thinkingBudget = client.defaults?.thinkingBudget ?? 0;
         const traceHeaders = agentTrajectoryHeaders(client._piModel?.baseUrl, modelCall, attempt, {
-          effort: client.defaults.thinkingBudget > 0 ? "enabled" : "disabled",
-          ...(client.defaults.thinkingBudget > 0
-            ? { budgetTokens: client.defaults.thinkingBudget }
-            : {}),
+          effort: thinkingBudget > 0 ? "enabled" : "disabled",
+          ...(thinkingBudget > 0 ? { budgetTokens: thinkingBudget } : {}),
         });
         // Pipeline agents often perform long-form generation before yielding the
         // first token. Keep that path bounded, but do not apply the tighter

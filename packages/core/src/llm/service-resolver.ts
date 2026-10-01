@@ -18,6 +18,7 @@ export interface ResolveServiceModelOptions {
   temperature?: number;
   topP?: number;
   thinkingBudget?: number;
+  compactionThreshold?: number;
 }
 
 export interface ResolvedModel {
@@ -27,6 +28,7 @@ export interface ResolvedModel {
   temperatureRange?: readonly [number, number];
   temperatureHint?: string;
   topP?: number;
+  compactionThreshold?: number;
 }
 
 export class ServiceApiKeyNotFoundError extends Error {
@@ -143,6 +145,10 @@ export async function resolveServiceModel(
     ?? (typeof configuredEntry?.thinkingBudget === "number" ? configuredEntry.thinkingBudget : undefined)
     ?? 0;
 
+  const effectiveCompactionThreshold = options?.compactionThreshold
+    ?? (typeof modelConfig?.compactionThreshold === "number" ? modelConfig.compactionThreshold : undefined)
+    ?? (typeof configuredEntry?.compactionThreshold === "number" ? configuredEntry.compactionThreshold : undefined);
+
   const model: Model<Api> = {
     id: modelId,
     name: piModel?.name ?? modelId,
@@ -155,6 +161,7 @@ export async function resolveServiceModel(
     contextWindow: effectiveContextWindow,
     maxTokens: effectiveMaxOutput,
     ...(compat ? { compat: compat as Model<Api>["compat"] } : {}),
+    ...(effectiveCompactionThreshold !== undefined ? { compactionThreshold: effectiveCompactionThreshold } : {}),
   };
 
   return {
@@ -164,5 +171,6 @@ export async function resolveServiceModel(
     temperatureRange: preset?.temperatureRange,
     temperatureHint: preset?.temperatureHint,
     topP: effectiveTopP,
+    compactionThreshold: effectiveCompactionThreshold,
   };
 }

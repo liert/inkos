@@ -11,6 +11,7 @@ export interface ServiceDetailModelInfo {
   readonly temperature?: number;
   readonly topP?: number;
   readonly thinkingBudget?: number;
+  readonly compactionThreshold?: number;
 }
 
 export function mergeServiceDetailModels(
@@ -35,6 +36,7 @@ export function mergeServiceDetailModels(
           temperature: model.temperature ?? existing.temperature,
           topP: model.topP ?? existing.topP,
           thinkingBudget: model.thinkingBudget ?? existing.thinkingBudget,
+          compactionThreshold: model.compactionThreshold ?? existing.compactionThreshold,
         });
       } else {
         mergedMap.set(key, { ...model, id });
@@ -171,6 +173,7 @@ function extractModelConfigs(models: ServiceDetailModelInfo[]): Record<string, {
   temperature?: number;
   topP?: number;
   thinkingBudget?: number;
+  compactionThreshold?: number;
 }> | undefined {
   const configs: Record<string, Record<string, number>> = {};
   for (const m of models) {
@@ -180,6 +183,7 @@ function extractModelConfigs(models: ServiceDetailModelInfo[]): Record<string, {
     if (typeof m.temperature === "number" && !Number.isNaN(m.temperature)) cfg.temperature = m.temperature;
     if (typeof m.topP === "number" && !Number.isNaN(m.topP)) cfg.topP = m.topP;
     if (typeof m.thinkingBudget === "number" && !Number.isNaN(m.thinkingBudget)) cfg.thinkingBudget = m.thinkingBudget;
+    if (typeof m.compactionThreshold === "number" && !Number.isNaN(m.compactionThreshold)) cfg.compactionThreshold = m.compactionThreshold;
     if (Object.keys(cfg).length > 0) {
       configs[m.id] = cfg;
     }
@@ -202,6 +206,7 @@ export async function saveServiceConfig(args: {
   readonly contextWindow?: string;
   readonly maxOutput?: string;
   readonly thinkingBudget?: string;
+  readonly compactionThreshold?: string;
   readonly detectedModel: string;
   readonly configuredModels?: ReadonlyArray<ServiceDetailModelInfo | string>;
   readonly verifiedProbe?: ServiceDetailVerifiedProbe | null;
@@ -300,6 +305,7 @@ export async function saveServiceConfig(args: {
   const parsedContextWindow = args.contextWindow !== undefined && args.contextWindow !== "" ? parseInt(args.contextWindow, 10) : undefined;
   const parsedMaxOutput = args.maxOutput !== undefined && args.maxOutput !== "" ? parseInt(args.maxOutput, 10) : undefined;
   const parsedThinkingBudget = args.thinkingBudget !== undefined && args.thinkingBudget !== "" ? parseInt(args.thinkingBudget, 10) : undefined;
+  const parsedCompactionThreshold = args.compactionThreshold !== undefined && args.compactionThreshold !== "" ? parseInt(args.compactionThreshold, 10) : undefined;
 
   await fetchJsonImpl("/services/config", {
     method: "PUT",
@@ -315,6 +321,7 @@ export async function saveServiceConfig(args: {
           ...(parsedContextWindow !== undefined && !Number.isNaN(parsedContextWindow) ? { contextWindow: parsedContextWindow } : {}),
           ...(parsedMaxOutput !== undefined && !Number.isNaN(parsedMaxOutput) ? { maxOutput: parsedMaxOutput } : {}),
           ...(parsedThinkingBudget !== undefined && !Number.isNaN(parsedThinkingBudget) ? { thinkingBudget: parsedThinkingBudget } : {}),
+          ...(parsedCompactionThreshold !== undefined && !Number.isNaN(parsedCompactionThreshold) ? { compactionThreshold: parsedCompactionThreshold } : {}),
           apiFormat: savedApiFormat,
           stream: savedStream,
           models: savedModels.map((model) => model.id),

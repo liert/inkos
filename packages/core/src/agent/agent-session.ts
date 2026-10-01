@@ -742,7 +742,21 @@ function agentContextBudget(model: Model<Api>): number {
     : fallbackWindow;
   const reservedOutput = agentOutputBudget(model);
   const transportOverhead = Math.max(2048, Math.floor(contextWindow * 0.05));
-  return Math.max(2000, contextWindow - reservedOutput - transportOverhead);
+  const rawBudget = contextWindow - reservedOutput - transportOverhead;
+  // Upstream hard ceiling for 1M context models (e.g. Gemini 1048576 tokens).
+  // Cap the physical model budget to 900,000 tokens to ensure transport framing,
+  // tool JSON schemas, and tokenizer variance never exceed the physical ceiling.
+  return Math.max(2000, Math.min(900_000, rawBudget));
+}
+
+const DEFAULT_MAX_COMPACTION_THRESHOLD = 65_536; // 64k working compaction ceiling
+
+function agentCompactionThreshold(model: Model<Api>, budgetTokens: number): number {
+  const custom = (model as unknown as { compactionThreshold?: number }).compactionThreshold;
+  if (typeof custom === "number" && custom > 0) {
+    return Math.min(budgetTokens, custom);
+  }
+  return Math.min(budgetTokens, DEFAULT_MAX_COMPACTION_THRESHOLD);
 }
 
 function isAbortLike(error: unknown): boolean {
@@ -1099,6 +1113,7 @@ async function runAgentSessionUnlocked(
         work,
         profile,
         budgetTokens: agentContextBudget(model),
+        compactionThreshold: agentCompactionThreshold(model, agentContextBudget(model)),
         semanticCompiler: async (request) => ({
           content: await compileHarnessContextText({
             model,

@@ -61,6 +61,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   const [contextWindow, setContextWindow] = useState("128000");
   const [maxOutput, setMaxOutput] = useState("4096");
   const [thinkingBudget, setThinkingBudget] = useState("0");
+  const [compactionThreshold, setCompactionThreshold] = useState("65536");
   const [apiFormat, setApiFormat] = useState<LLMApiFormat>("chat");
   const [stream, setStream] = useState(true);
   const [detectedModel, setDetectedModel] = useState<string>("");
@@ -90,6 +91,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         if (typeof matched.contextWindow === "number") setContextWindow(String(matched.contextWindow));
         if (typeof matched.maxOutput === "number") setMaxOutput(String(matched.maxOutput));
         if (typeof matched.thinkingBudget === "number") setThinkingBudget(String(matched.thinkingBudget));
+        if (typeof (matched as any).compactionThreshold === "number") setCompactionThreshold(String((matched as any).compactionThreshold));
         if (isLLMApiFormat(matched.apiFormat)) setApiFormat(matched.apiFormat);
         if (typeof matched.stream === "boolean") setStream(matched.stream);
 
@@ -109,6 +111,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
                 ...(typeof cfg.temperature === "number" ? { temperature: cfg.temperature } : {}),
                 ...(typeof cfg.topP === "number" ? { topP: cfg.topP } : {}),
                 ...(typeof cfg.thinkingBudget === "number" ? { thinkingBudget: cfg.thinkingBudget } : {}),
+                ...(typeof cfg.compactionThreshold === "number" ? { compactionThreshold: cfg.compactionThreshold } : {}),
               };
             });
           setConfiguredModels(mergeServiceDetailModels(modelsWithConfigs));
@@ -265,6 +268,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         contextWindow,
         maxOutput,
         thinkingBudget,
+        compactionThreshold,
         detectedModel,
         configuredModels,
         verifiedProbe,
@@ -299,6 +303,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
     setContextWindow("128000");
     setMaxOutput("4096");
     setThinkingBudget("0");
+    setCompactionThreshold("65536");
   };
 
   const handleSaveModelOverride = (updated: ModelInfo) => {
@@ -595,6 +600,47 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
               </div>
             </Field>
 
+            {/* Compaction Threshold */}
+            <Field label={tr("会话压缩阈值 (Compaction Threshold, tokens)", "Compaction Threshold (tokens)")}>
+              <div className="space-y-1.5">
+                <input
+                  type="number"
+                  value={compactionThreshold}
+                  onChange={(e) => setCompactionThreshold(e.target.value)}
+                  placeholder="65536"
+                  min="2000"
+                  className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono"
+                />
+                <div className="flex gap-1.5 flex-wrap">
+                  {[
+                    { label: "32K", value: "32768" },
+                    { label: "64K (推荐默认)", value: "65536" },
+                    { label: "96K", value: "98304" },
+                    { label: "128K", value: "128000" },
+                  ].map((pill) => (
+                    <button
+                      key={pill.value}
+                      type="button"
+                      onClick={() => setCompactionThreshold(pill.value)}
+                      className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
+                        compactionThreshold === pill.value
+                          ? "bg-primary text-primary-foreground border-primary font-medium"
+                          : "bg-secondary/40 text-muted-foreground border-border/40 hover:bg-secondary"
+                      }`}
+                    >
+                      {pill.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
+                  {tr(
+                    "多轮对话与工具调用超出此阈值时自动触发上下文精简压缩，保持 Agent 高速响应并防止大模型物理窗口超限，默认 65,536 (64K)。",
+                    "Conversation and tool history exceeding this threshold triggers context compaction, keeping the Agent fast and preventing model token overflow. Default is 65,536 (64K).",
+                  )}
+                </p>
+              </div>
+            </Field>
+
             {/* Max Output */}
             <Field label={tr("最大输出长度 (Max Output Tokens)", "Max Output Tokens")}>
               <div className="space-y-1.5">
@@ -724,6 +770,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
             temperature,
             topP,
             thinkingBudget,
+            compactionThreshold,
           }}
           onSave={handleSaveModelOverride}
           onClose={() => setEditingModel(null)}
@@ -746,6 +793,7 @@ function ModelSettingsModal({
     temperature: string;
     topP: string;
     thinkingBudget: string;
+    compactionThreshold: string;
   };
   onSave: (updated: ModelInfo) => void;
   onClose: () => void;
@@ -765,6 +813,9 @@ function ModelSettingsModal({
   const [thinkingBudget, setThinkingBudget] = useState(
     model.thinkingBudget !== undefined ? String(model.thinkingBudget) : ""
   );
+  const [compactionThreshold, setCompactionThreshold] = useState(
+    model.compactionThreshold !== undefined ? String(model.compactionThreshold) : ""
+  );
 
   const handleClear = () => {
     setContextWindow("");
@@ -772,6 +823,7 @@ function ModelSettingsModal({
     setTemperature("");
     setTopP("");
     setThinkingBudget("");
+    setCompactionThreshold("");
   };
 
   const handleApply = () => {
@@ -780,6 +832,7 @@ function ModelSettingsModal({
     const parsedTemp = temperature.trim() ? parseFloat(temperature) : undefined;
     const parsedTp = topP.trim() ? parseFloat(topP) : undefined;
     const parsedTb = thinkingBudget.trim() ? parseInt(thinkingBudget, 10) : undefined;
+    const parsedCt = compactionThreshold.trim() ? parseInt(compactionThreshold, 10) : undefined;
 
     onSave({
       id: model.id,
@@ -789,6 +842,7 @@ function ModelSettingsModal({
       temperature: parsedTemp !== undefined && !Number.isNaN(parsedTemp) ? parsedTemp : undefined,
       topP: parsedTp !== undefined && !Number.isNaN(parsedTp) ? parsedTp : undefined,
       thinkingBudget: parsedTb !== undefined && !Number.isNaN(parsedTb) ? parsedTb : undefined,
+      compactionThreshold: parsedCt !== undefined && !Number.isNaN(parsedCt) ? parsedCt : undefined,
     });
   };
 
@@ -846,6 +900,32 @@ function ModelSettingsModal({
                     className="text-[10px] px-1.5 py-0.5 rounded border border-border/40 bg-secondary/30 hover:bg-secondary text-muted-foreground"
                   >
                     {val === "128000" ? "128K" : val === "1000000" ? "1M" : val === "200000" ? "200K" : val === "65536" ? "64K" : "32K"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </Field>
+
+          {/* Compaction Threshold */}
+          <Field label={tr("会话压缩阈值 (Compaction Threshold, tokens)", "Compaction Threshold (tokens)")}>
+            <div className="space-y-1.5">
+              <input
+                type="number"
+                value={compactionThreshold}
+                onChange={(e) => setCompactionThreshold(e.target.value)}
+                placeholder={tr(`继承服务默认 (${serviceDefaults.compactionThreshold || "65536"})`, `Inherit default (${serviceDefaults.compactionThreshold || "65536"})`)}
+                min="2000"
+                className="w-full rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs font-mono"
+              />
+              <div className="flex gap-1 flex-wrap">
+                {["32768", "65536", "98304", "128000"].map((val) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setCompactionThreshold(val)}
+                    className="text-[10px] px-1.5 py-0.5 rounded border border-border/40 bg-secondary/30 hover:bg-secondary text-muted-foreground"
+                  >
+                    {val === "65536" ? "64K" : val === "32768" ? "32K" : val === "98304" ? "96K" : "128K"}
                   </button>
                 ))}
               </div>
