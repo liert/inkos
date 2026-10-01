@@ -6,7 +6,7 @@ description: 商业短篇市场、平台样本、标题与移动端阅读趋势�
 
 Use this skill when the user asks what short fiction is working, how platforms differ, or which commercial direction to test.
 
-- Use `research_web` for current platform and market claims; archive user-provided samples with `ingest_material`.
+- Use `scan_market_radar` as the primary default tool for current platform rankings and market trends (built-in Fanqie/Qidian real-time sources, zero configuration needed; automatically augmented by Tavily when configured). Use `research_web` for broader web research; archive user-provided samples with `ingest_material`.
 - Study titles, openings, pressure chains, evidence chains, emotional gaps, reversals, payoffs, chapter titles, and mobile-reading density.
 - Separate a durable mechanism from a temporary surface trend.
 - Do not turn benchmark research into plagiarism detection or a fixed tag table.

@@ -7,7 +7,7 @@ description: 长篇网文市场、榜单、平台趋势与对标研究。Use for
 Use this skill when the user wants current market evidence, platform differences, comparable works, audience expectations, or topic selection for a long-form project.
 
 - Clarify the market, platform, audience, language, and time window only when they materially affect the answer.
-- Use `research_web` for current claims. Separate observed evidence, interpretation, and creative recommendation.
+- Use `scan_market_radar` as the primary default tool for current platform rankings and market trends (built-in Fanqie/Qidian real-time sources, no search API key needed; automatically augmented by Tavily when configured). Use `research_web` for broader web research. Separate observed evidence, interpretation, and creative recommendation.
 - Use `ingest_material` for user-provided reports or URLs and `retrieve_material` for already archived evidence.
 - Do not treat rankings, popularity, or one successful book as a writing formula. Extract mechanisms and uncertainty.
 - Research never mutates book canon. If the user later wants a source available during chapter writing, archive it and explicitly bind it with `manage_book_reference` in the active book.

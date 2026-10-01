@@ -17,7 +17,7 @@ import { ContinuityAuditor } from "../agents/continuity.js";
 import { ReviserAgent, DEFAULT_REVISE_MODE, type ReviseMode } from "../agents/reviser.js";
 import { StateValidatorAgent, type ValidationResult } from "../agents/state-validator.js";
 import { RadarAgent } from "../agents/radar.js";
-import type { RadarSource } from "../agents/radar-source.js";
+import { type RadarSource, buildDefaultRadarSources } from "../agents/radar-source.js";
 import { StateManager } from "../state/manager.js";
 import { archiveChapterVersion, readChapterUserBrief } from "../state/chapter-workspace.js";
 import { dispatchNotification, dispatchWebhookEvent } from "../notify/dispatcher.js";
@@ -435,19 +435,45 @@ export class PipelineRunner {
   // Atomic operations (composable by OpenClaw or agent mode)
   // ---------------------------------------------------------------------------
 
-  async runRadar(): Promise<RadarResult> {
+  async runRadar(options?: {
+    readonly topic?: string;
+    readonly platform?: "all" | "tomato" | "qidian" | "other";
+  }): Promise<RadarResult> {
     const available = await loadAvailableAgentSkills({ projectRoot: this.config.projectRoot });
     const marketSkill = [...available.skills].reverse().find((skill) => skill.id === "inkos-long-market-research");
     if (!marketSkill) throw new Error("Radar requires unavailable skill: inkos-long-market-research");
     const baseContext = this.agentCtxFor("radar");
+
+    let searchOptions = undefined;
+    try {
+      const raw = JSON.parse(await readFile(join(this.config.projectRoot, "inkos.json"), "utf-8")) as Record<string, unknown>;
+      const searchConfig = raw.researchSearch as { enabled?: boolean; apiKey?: string; apiKeyEnv?: string; baseUrl?: string } | undefined;
+      if (searchConfig?.enabled) {
+        searchOptions = {
+          apiKey: searchConfig.apiKey,
+          apiKeyEnv: searchConfig.apiKeyEnv,
+          baseUrl: searchConfig.baseUrl,
+        };
+      }
+    } catch {
+      // ignore
+    }
+
+    const sources = this.config.radarSources ?? buildDefaultRadarSources({
+      topic: options?.topic,
+      platform: options?.platform,
+      searchOptions,
+      includeTavilyIfConfigured: true,
+    });
+
     const radar = new RadarAgent({
       ...baseContext,
       activatedSkills: mergeActivatedSkillGuidance(
         baseContext.activatedSkills ?? [],
         [{ skill: marketSkill, resources: [] }],
       ),
-    }, this.config.radarSources);
-    return radar.scan();
+    }, sources);
+    return radar.scan(options?.topic);
   }
 
   async initBook(book: BookConfig, options: InitBookOptions = {}): Promise<void> {

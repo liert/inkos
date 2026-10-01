@@ -51,7 +51,7 @@ export class RadarAgent extends BaseAgent {
     return "radar";
   }
 
-  async scan(): Promise<RadarResult> {
+  async scan(topicFocus?: string): Promise<RadarResult> {
     const rankings = await Promise.all(this.sources.map((s) => s.fetch()));
     const rankingsText = formatRankingsForPrompt(rankings);
     if (!rankingsText) {
@@ -66,12 +66,16 @@ ${rankingsText}
 
 通过结果工具提交建议和整体市场概述。`;
 
+    const userPrompt = topicFocus?.trim()
+      ? `请基于上面的实时排行榜数据，重点针对“${topicFocus.trim()}”方向，分析当前网文市场热度与爆款机制，给出开书建议。`
+      : `请基于上面的实时排行榜数据，分析当前网文市场热度，给出开书建议。`;
+
     const { result } = await this.submitStructured(
       [
         { role: "system", content: systemPrompt },
         {
           role: "user",
-          content: `请基于上面的实时排行榜数据，分析当前网文市场热度，给出开书建议。`,
+          content: userPrompt,
         },
       ],
       {

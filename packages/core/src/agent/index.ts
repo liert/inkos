@@ -9,6 +9,7 @@ export {
   createContinuationImportTool,
   createSpinoffBookTool,
   createImitationBookTool,
+  createScanMarketRadarTool,
   createResearchWebTool,
   createIngestMaterialTool,
   createManageBookReferenceTool,

@@ -1,3 +1,5 @@
+import { searchWeb, type SearchResult, type WebSearchOptions } from "../utils/web-search.js";
+
 export interface RankingEntry {
   readonly title: string;
   readonly author: string;
@@ -120,4 +122,112 @@ export class QidianRadarSource implements RadarSource {
 
     return { platform: "起点中文网", entries };
   }
+}
+
+/**
+ * Optional Tavily-powered radar source to augment built-in ranking sources with external web insights.
+ */
+export class TavilyRadarSource implements RadarSource {
+  readonly name = "tavily";
+  private readonly query: string;
+  private readonly options: WebSearchOptions;
+
+  constructor(query?: string, options: WebSearchOptions = {}) {
+    this.query = query?.trim() || "网络小说 热门题材 榜单 趋势 知乎盐选 番茄 起点";
+    this.options = options;
+  }
+
+  async fetch(): Promise<PlatformRankings> {
+    try {
+      const results = await searchWeb(this.query, 6, this.options);
+      const entries: RankingEntry[] = results.map((r) => ({
+        title: r.title,
+        author: "",
+        category: "全网热度",
+        extra: `[外网分析: ${r.snippet ? r.snippet.slice(0, 100) : r.url}]`,
+      }));
+      return { platform: "全网搜索趋势 (Tavily)", entries };
+    } catch {
+      // Tavily is optional: if no key or error, return empty gracefully without throwing
+      return { platform: "全网搜索趋势 (Tavily)", entries: [] };
+    }
+  }
+}
+
+/**
+ * Build default radar sources: always includes Tomato (Fanqie) and Qidian.
+ * Optionally appends Tavily when a key is present or configured.
+ */
+export function buildDefaultRadarSources(options?: {
+  readonly topic?: string;
+  readonly platform?: "all" | "tomato" | "qidian" | "other";
+  readonly searchOptions?: WebSearchOptions;
+  readonly includeTavilyIfConfigured?: boolean;
+}): ReadonlyArray<RadarSource> {
+  const sources: RadarSource[] = [];
+  const platform = options?.platform ?? "all";
+
+  if (platform === "all" || platform === "tomato") {
+    sources.push(new FanqieRadarSource());
+  }
+  if (platform === "all" || platform === "qidian") {
+    sources.push(new QidianRadarSource());
+  }
+
+  const hasTavilyKey = Boolean(
+    options?.searchOptions?.apiKey ||
+    (options?.searchOptions?.apiKeyEnv ? process.env[options.searchOptions.apiKeyEnv] : undefined) ||
+    process.env.TAVILY_API_KEY,
+  );
+
+  if ((hasTavilyKey || options?.includeTavilyIfConfigured) && hasTavilyKey) {
+    sources.push(new TavilyRadarSource(options?.topic, options?.searchOptions));
+  }
+
+  return sources;
+}
+
+/**
+ * Searches real-time novel rankings from built-in Market Radar sources (Fanqie + Qidian).
+ * Used as a zero-config, highly-reliable default or fallback search provider.
+ */
+export async function searchMarketRadarRankings(
+  query?: string,
+  maxResults = 10,
+): Promise<ReadonlyArray<SearchResult>> {
+  const sources = [new FanqieRadarSource(), new QidianRadarSource()];
+  const rankings = await Promise.all(sources.map((s) => s.fetch().catch(() => ({ platform: s.name, entries: [] }))));
+  const allEntries: Array<{ platform: string; entry: RankingEntry }> = [];
+  for (const r of rankings) {
+    for (const e of r.entries) {
+      if (e.title?.trim()) {
+        allEntries.push({ platform: r.platform, entry: e });
+      }
+    }
+  }
+
+  const terms = (query ?? "")
+    .toLowerCase()
+    .split(/[\s,，、+]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0 && !["2024", "2025", "小说", "题材", "市场", "趋势", "爆款"].includes(t));
+
+  let filtered = allEntries;
+  if (terms.length > 0) {
+    const scored = allEntries.map((item) => {
+      const text = `${item.platform} ${item.entry.title} ${item.entry.author} ${item.entry.category} ${item.entry.extra}`.toLowerCase();
+      const score = terms.reduce((acc, term) => (text.includes(term) ? acc + 1 : acc), 0);
+      return { item, score };
+    });
+    const matches = scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score);
+    if (matches.length > 0) {
+      filtered = matches.map((m) => m.item);
+    }
+  }
+
+  return filtered.slice(0, maxResults).map(({ platform, entry }) => ({
+    title: `[${platform}${entry.extra ? ` ${entry.extra}` : ""}] 《${entry.title}》 ${entry.author ? `(作者: ${entry.author})` : ""} ${entry.category ? `[${entry.category}]` : ""}`.trim(),
+    url: `inkos://radar/${encodeURIComponent(platform)}/${encodeURIComponent(entry.title)}`,
+    snippet: `实时热度榜单作品: 《${entry.title}》，所属平台: ${platform}，榜单标签: ${entry.extra}，分类: ${entry.category || "综合"}。`,
+  }));
 }

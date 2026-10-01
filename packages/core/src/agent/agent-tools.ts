@@ -42,7 +42,8 @@ import {
   type ActionPayload,
 } from "../interaction/action-envelope.js";
 import { ResearchSearchConfigSchema } from "../models/project.js";
-import { searchWeb } from "../utils/web-search.js";
+import { searchWeb, fetchUrl } from "../utils/web-search.js";
+import { searchMarketRadarRankings } from "../agents/radar-source.js";
 import { runAsWorkflowTrajectory } from "../llm/agent-trajectory.js";
 import type { ActivatedSkillGuidance } from "./skill-tool.js";
 import {
@@ -743,6 +744,78 @@ function resolveProductionToolSkills(options: SkillAwareProductionOptions): Acti
 }
 
 // ---------------------------------------------------------------------------
+// 1b. Market Radar Tool (scan_market_radar)
+// ---------------------------------------------------------------------------
+
+const ScanMarketRadarParams = Type.Object({
+  topic: Type.Optional(Type.String({
+    description: "Optional specific topic, genre, or keyword to focus the market analysis on, e.g. '女频商业反杀', '都市脑洞', '科幻无限流'.",
+  })),
+  platform: Type.Optional(Type.Union([
+    Type.Literal("all"),
+    Type.Literal("tomato"),
+    Type.Literal("qidian"),
+  ], {
+    description: "Target platform to analyze. Default 'all'.",
+  })),
+});
+
+type ScanMarketRadarParamsType = Static<typeof ScanMarketRadarParams>;
+
+export function createScanMarketRadarTool(
+  pipeline: PipelineRunner,
+  projectRoot: string,
+): AgentTool<typeof ScanMarketRadarParams> {
+  return {
+    name: "scan_market_radar",
+    description:
+      "Scan real-time online fiction market trends, platform rankings (Tomato/番茄热门与黑马榜, Qidian/起点热榜), and benchmark titles. " +
+      "Uses built-in platform data sources by default (no external API keys needed). " +
+      "Optionally supplements with Tavily web trends when configured. Saves scan report to radar/ and produces evidence-grounded recommendations.",
+    label: "Scan Market Radar",
+    parameters: ScanMarketRadarParams,
+    async execute(
+      _toolCallId: string,
+      params: ScanMarketRadarParamsType,
+      _signal?: AbortSignal,
+      onUpdate?: AgentToolUpdateCallback,
+    ): Promise<AgentToolResult<unknown>> {
+      onUpdate?.(textResult(`正在扫描市场雷达数据与平台榜单 (平台: ${params.platform ?? "all"})...`));
+      const result = await pipeline.runRadar({
+        topic: params.topic,
+        platform: params.platform,
+      });
+
+      const radarDir = join(projectRoot, "radar");
+      await mkdir(radarDir, { recursive: true });
+      const timestamp = (result.timestamp || new Date().toISOString()).replace(/[:.]/g, "-");
+      const filePath = join(radarDir, `scan-${timestamp}.json`);
+      await writeFile(filePath, JSON.stringify(result, null, 2), "utf-8");
+
+      const recsText = result.recommendations.map((rec, i) =>
+        `${i + 1}. [${rec.platform} · ${rec.genre}] ${rec.concept}\n   - 依据: ${rec.reasoning}\n   - 对标作品: ${rec.benchmarkTitles.length > 0 ? rec.benchmarkTitles.join("、") : "暂无"}`
+      ).join("\n\n");
+
+      const summaryText = [
+        `### 市场雷达扫描分析报告`,
+        `**扫描时间**: ${result.timestamp}`,
+        `**平台与题材概述**:\n${result.marketSummary}`,
+        `\n**题材与开书建议**:\n${recsText}`,
+        `\n扫描结果已持久化保存至: \`${filePath}\``,
+      ].join("\n");
+
+      return textResult(summaryText, {
+        kind: "radar_result",
+        filePath,
+        marketSummary: result.marketSummary,
+        recommendations: result.recommendations,
+        timestamp: result.timestamp,
+      });
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 2. Research Tool (research_web)
 // ---------------------------------------------------------------------------
 
@@ -769,6 +842,7 @@ export function createResearchWebTool(projectRoot: string): AgentTool<typeof Res
     name: "research_web",
     description:
       "Collect traceable web research for worldbuilding, era, profession, market, or fact-check questions. " +
+      "Defaults to built-in Market Radar ranking sources (no search API key required) and seamlessly supplements with Tavily when configured. " +
       "Saves a Markdown report under .inkos/research/. It is reference material only; it must not modify books, chapters, or truth files.",
     label: "Research Web",
     parameters: ResearchWebParams,
@@ -787,12 +861,35 @@ export function createResearchWebTool(projectRoot: string): AgentTool<typeof Res
             baseUrl: searchConfig.baseUrl,
           }
         : {};
+
+      const hasTavilyKey = Boolean(
+        searchOptions.apiKey
+        || (searchOptions.apiKeyEnv ? process.env[searchOptions.apiKeyEnv] : undefined)
+        || process.env.TAVILY_API_KEY,
+      );
+
       const report = await runResearchReport({
         topic: params.topic,
         purpose: params.purpose,
         depth: params.depth ?? "standard",
       }, {
-        search: (query, maxResults) => searchWeb(query, maxResults, searchOptions),
+        search: async (query, maxResults) => {
+          if (hasTavilyKey) {
+            try {
+              const tavilyResults = await searchWeb(query, maxResults, searchOptions);
+              if (tavilyResults.length > 0) return tavilyResults;
+            } catch {
+              // Fall back to built-in Market Radar sources if Tavily search fails
+            }
+          }
+          return await searchMarketRadarRankings(query, maxResults);
+        },
+        fetch: async (url) => {
+          if (url.startsWith("inkos://")) {
+            return `[InkOS 市场雷达数据源] ${decodeURIComponent(url.replace(/^inkos:\/\/radar\//, ""))}`;
+          }
+          return await fetchUrl(url);
+        },
       });
       const reportDir = join(projectRoot, ".inkos", "research");
       await mkdir(reportDir, { recursive: true });
