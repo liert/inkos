@@ -55,17 +55,44 @@ export function resolveModelsToPersist(args: {
   readonly displayedModels?: ReadonlyArray<ServiceDetailModelInfo | string>;
   readonly probeModels?: ReadonlyArray<ServiceDetailModelInfo | string>;
   readonly modelsSource?: "api" | "fallback";
+  readonly isCustom?: boolean;
+  readonly removedModelIds?: ReadonlyArray<string>;
 }): ServiceDetailModelInfo[] {
-  const displayed = mergeServiceDetailModels(args.displayedModels);
-  const probed = mergeServiceDetailModels(args.probeModels);
+  const removed = new Set((args.removedModelIds ?? []).map((id) => id.trim().toLowerCase()));
+  const displayed = mergeServiceDetailModels(args.displayedModels).filter((m) => !removed.has(m.id.toLowerCase()));
+  const probed = mergeServiceDetailModels(args.probeModels).filter((m) => !removed.has(m.id.toLowerCase()));
+
+  if (args.isCustom) {
+    if (displayed.length > 0) {
+      // In custom services, the displayed/configured models are the exact user-curated set.
+      // Enrich with metadata from probed models if present, but do not resurrect removed or unselected models.
+      const probedMap = new Map(probed.map((m) => [m.id.toLowerCase(), m]));
+      return displayed.map((m) => {
+        const matchingProbe = probedMap.get(m.id.toLowerCase());
+        if (!matchingProbe) return m;
+        return {
+          ...matchingProbe,
+          ...m,
+          name: m.name ?? matchingProbe.name,
+          contextWindow: m.contextWindow ?? matchingProbe.contextWindow,
+          maxOutput: m.maxOutput ?? matchingProbe.maxOutput,
+          temperature: m.temperature ?? matchingProbe.temperature,
+          topP: m.topP ?? matchingProbe.topP,
+          thinkingBudget: m.thinkingBudget ?? matchingProbe.thinkingBudget,
+          compactionThreshold: m.compactionThreshold ?? matchingProbe.compactionThreshold,
+        };
+      });
+    }
+    return probed;
+  }
 
   if (args.modelsSource === "fallback") {
     return displayed.length > 0 ? displayed : probed;
   }
   if (args.modelsSource === "api") {
-    return mergeServiceDetailModels(probed, displayed);
+    return mergeServiceDetailModels(probed, displayed).filter((m) => !removed.has(m.id.toLowerCase()));
   }
-  return mergeServiceDetailModels(displayed, probed);
+  return mergeServiceDetailModels(displayed, probed).filter((m) => !removed.has(m.id.toLowerCase()));
 }
 
 export interface ServiceDetailDetectedConfig {
@@ -209,6 +236,7 @@ export async function saveServiceConfig(args: {
   readonly compactionThreshold?: string;
   readonly detectedModel: string;
   readonly configuredModels?: ReadonlyArray<ServiceDetailModelInfo | string>;
+  readonly removedModelIds?: ReadonlyArray<string>;
   readonly verifiedProbe?: ServiceDetailVerifiedProbe | null;
   readonly fetchJsonImpl?: JsonFetcher;
 }): Promise<{
@@ -282,13 +310,20 @@ export async function saveServiceConfig(args: {
     };
   }
 
-  const detectedModel = probe.selectedModel ?? args.detectedModel;
+  const removedSet = new Set((args.removedModelIds ?? []).map((id) => id.trim().toLowerCase()));
+  const probeModels = (probe.models ?? []).filter((m) => !removedSet.has(m.id.trim().toLowerCase()));
   const detectedConfig = probe.detected ?? null;
   const savedModels = resolveModelsToPersist({
     displayedModels: args.configuredModels,
-    probeModels: probe.models,
+    probeModels,
     modelsSource: detectedConfig?.modelsSource ?? verified?.detected?.modelsSource,
+    isCustom: args.isCustom,
+    removedModelIds: args.removedModelIds,
   });
+  const detectedModelCandidate = probe.selectedModel ?? args.detectedModel;
+  const detectedModel = savedModels.some((m) => m.id.toLowerCase() === detectedModelCandidate.toLowerCase())
+    ? detectedModelCandidate
+    : (savedModels[0]?.id ?? "");
   const savedApiFormat = detectedConfig?.apiFormat ?? args.apiFormat;
   const savedStream = typeof detectedConfig?.stream === "boolean" ? detectedConfig.stream : args.stream;
   const savedBaseUrl = args.isCustom ? (detectedConfig?.baseUrl ?? trimmedBaseUrl) : undefined;

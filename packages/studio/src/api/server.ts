@@ -1917,11 +1917,27 @@ function mergeServiceConfig(existing: ServiceConfigEntry[], updates: ServiceConf
   for (const update of updates) {
     const key = serviceConfigKey(update);
     const previous = merged.get(key);
+    const effectiveModels = update.models !== undefined ? update.models : previous?.models;
+    const effectiveModelConfigs: Record<string, CustomModelConfig> | undefined = (() => {
+      const raw = update.modelConfigs !== undefined ? update.modelConfigs : previous?.modelConfigs;
+      if (!raw) return undefined;
+      if (effectiveModels !== undefined) {
+        const allowedIds = new Set(effectiveModels.map((id) => id.toLowerCase()));
+        const filtered: Record<string, CustomModelConfig> = {};
+        for (const [k, v] of Object.entries(raw)) {
+          if (allowedIds.has(k.toLowerCase())) {
+            filtered[k] = v;
+          }
+        }
+        return filtered;
+      }
+      return raw;
+    })();
     merged.set(key, {
       ...previous,
       ...update,
-      ...(update.models === undefined && previous?.models ? { models: previous.models } : {}),
-      ...(update.modelConfigs === undefined && previous?.modelConfigs ? { modelConfigs: previous.modelConfigs } : {}),
+      ...(effectiveModels !== undefined ? { models: effectiveModels } : {}),
+      ...(effectiveModelConfigs !== undefined ? { modelConfigs: effectiveModelConfigs } : {}),
       ...(update.contextWindow === undefined && previous?.contextWindow ? { contextWindow: previous.contextWindow } : {}),
       ...(update.maxOutput === undefined && previous?.maxOutput ? { maxOutput: previous.maxOutput } : {}),
       ...(update.temperature === undefined && previous?.temperature ? { temperature: previous.temperature } : {}),
@@ -3697,6 +3713,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     }
     syncTopLevelLlmMirror(llm);
     await saveRawConfig(root, config);
+    modelListCache.clear();
     return c.json({ ok: true });
   });
 
@@ -4061,7 +4078,10 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       ...(m.maxOutput !== undefined ? { maxOutput: m.maxOutput } : {}),
       ...(m.contextWindow > 0 ? { contextWindow: m.contextWindow } : {}),
     }));
-    const models = mergeServiceModelIds(liveModels.map((model) => model.id), configuredModels)
+    const effectiveModelIds = isCustomServiceId(service) && configuredModels.length > 0
+      ? configuredModels
+      : mergeServiceModelIds(liveModels.map((model) => model.id), configuredModels);
+    const models = effectiveModelIds
       .map((id) => liveModels.find((model) => model.id.toLowerCase() === id.toLowerCase()) ?? { id, name: id });
     modelListCache.set(cacheKey, { models, at: Date.now() });
     return c.json({ models });

@@ -42,6 +42,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   const fetchServices = useServiceStore((s) => s.fetchServices);
   const refreshServices = useServiceStore((s) => s.refreshServices);
   const fetchBankModels = useServiceStore((s) => s.fetchBankModels);
+  const fetchCustomModels = useServiceStore((s) => s.fetchCustomModels);
   const setStoreModels = useServiceStore((s) => s.setLiveModels);
   const clearStoreModels = useServiceStore((s) => s.clearModels);
 
@@ -68,6 +69,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   const [detectedConfig, setDetectedConfig] = useState<DetectedConfig | null>(null);
   const [verifiedProbe, setVerifiedProbe] = useState<VerifiedProbe | null>(null);
   const [configuredModels, setConfiguredModels] = useState<ModelInfo[]>([]);
+  const [removedModelIds, setRemovedModelIds] = useState<string[]>([]);
   const [editingModel, setEditingModel] = useState<ModelInfo | null>(null);
   const [modelIdInput, setModelIdInput] = useState("");
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
@@ -198,7 +200,9 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         ...(isCustom ? { baseUrl: baseUrl.trim() } : {}),
       });
       if (result.ok) {
-        const models = result.models ?? [];
+        const rawProbedModels = result.models ?? [];
+        const removedSet = new Set(removedModelIds.map((id) => id.toLowerCase()));
+        const models = rawProbedModels.filter((m) => !removedSet.has(m.id.toLowerCase()));
         const verifiedApiFormat = result.detected?.apiFormat ?? apiFormat;
         const verifiedStream = typeof result.detected?.stream === "boolean" ? result.detected.stream : stream;
         const verifiedBaseUrl = isCustom ? (result.detected?.baseUrl ?? baseUrl.trim()) : "";
@@ -216,7 +220,8 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
           selectedModel: result.selectedModel,
           detected: result.detected,
         });
-        const mergedModels = mergeServiceDetailModels(configuredModels, preferredModel ? [preferredModel] : undefined, models);
+        const mergedModels = mergeServiceDetailModels(configuredModels, preferredModel ? [preferredModel] : undefined, models)
+          .filter((m) => !removedSet.has(m.id.toLowerCase()));
         setConfiguredModels(mergedModels);
         setStatus({ state: "connected", models: mergedModels });
         setStoreModels(effectiveServiceId, mergedModels); // Write to global store
@@ -271,6 +276,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         compactionThreshold,
         detectedModel,
         configuredModels,
+        removedModelIds,
         verifiedProbe,
       });
       if (result.status.state === "connected") {
@@ -292,6 +298,9 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
       }
       await refreshServices();
       await fetchBankModels();
+      if (isCustom) {
+        await fetchCustomModels();
+      }
     } catch (e) {
       setStatus({ state: "error", message: e instanceof Error ? e.message : tr("保存失败", "Save failed") });
     }
@@ -317,19 +326,33 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   };
 
   const handleAddModel = () => {
-    const next = mergeServiceDetailModels(configuredModels, [modelIdInput]);
+    const input = modelIdInput.trim();
+    if (!input) return;
+    const next = mergeServiceDetailModels(configuredModels, [input]);
     if (next.length === configuredModels.length) return;
     setConfiguredModels(next);
     setStoreModels(effectiveServiceId, next);
     if (status.state === "connected") setStatus({ state: "connected", models: next });
+    setRemovedModelIds((prev) => prev.filter((id) => id.toLowerCase() !== input.toLowerCase()));
     setModelIdInput("");
   };
 
   const handleRemoveModel = (modelId: string) => {
-    const next = models.filter((model) => model.id.toLowerCase() !== modelId.toLowerCase());
+    const targetId = modelId.trim().toLowerCase();
+    const next = models.filter((model) => model.id.trim().toLowerCase() !== targetId);
     setConfiguredModels(next);
     setStoreModels(effectiveServiceId, next);
     if (status.state === "connected") setStatus({ state: "connected", models: next });
+    if (verifiedProbe) {
+      setVerifiedProbe({
+        ...verifiedProbe,
+        models: verifiedProbe.models.filter((m) => m.id.trim().toLowerCase() !== targetId),
+      });
+    }
+    if (detectedModel.trim().toLowerCase() === targetId) {
+      setDetectedModel(next[0]?.id ?? "");
+    }
+    setRemovedModelIds((prev) => (prev.some((id) => id.toLowerCase() === targetId) ? prev : [...prev, modelId]));
   };
 
   return (

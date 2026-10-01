@@ -56,6 +56,32 @@ describe("resolveModelsToPersist", () => {
       modelsSource: "fallback",
     }).map((model) => model.id)).toEqual(["openrouter/auto"]);
   });
+
+  it("does not resurrect deleted models when saving a custom service", () => {
+    expect(resolveModelsToPersist({
+      displayedModels: [{ id: "deepseek-chat" }],
+      probeModels: [
+        { id: "deepseek-chat" },
+        { id: "deepseek-reasoner" },
+        { id: "dall-e-3" },
+      ],
+      modelsSource: "api",
+      isCustom: true,
+      removedModelIds: ["deepseek-reasoner"],
+    }).map((model) => model.id)).toEqual(["deepseek-chat"]);
+  });
+
+  it("filters out removedModelIds even when modelsSource is api", () => {
+    expect(resolveModelsToPersist({
+      displayedModels: [{ id: "google/gemini-3.7-flash" }],
+      probeModels: [
+        { id: "google/gemini-3.7-flash" },
+        { id: "openrouter/auto" },
+      ],
+      modelsSource: "api",
+      removedModelIds: ["openrouter/auto"],
+    }).map((model) => model.id)).toEqual(["google/gemini-3.7-flash"]);
+  });
 });
 
 describe("rehydrateServiceConnectionStatus", () => {
@@ -467,6 +493,61 @@ describe("saveServiceConfig", () => {
       },
     ]);
     expect(result.status).toEqual({ state: "connected", models: [{ id: "qwen3.6:35b-a3b" }] });
+  });
+
+  it("persists only remaining models when a model was removed from a custom service", async () => {
+    const calls: string[] = [];
+    const bodies: unknown[] = [];
+    const fetchJsonImpl = vi.fn(async (path: string, init?: RequestInit) => {
+      calls.push(path);
+      if (init?.body) {
+        bodies.push(JSON.parse(String(init.body)));
+      }
+      if (path === "/services/custom%3AMyGateway/test") {
+        return {
+          ok: true,
+          models: [{ id: "model-a" }, { id: "model-b" }, { id: "model-c" }],
+          selectedModel: "model-b",
+          detected: { apiFormat: "chat", stream: true, baseUrl: "https://api.example.com/v1", modelsSource: "api" },
+        };
+      }
+      if (path === "/services/custom%3AMyGateway/secret") {
+        return { ok: true };
+      }
+      if (path === "/services/config") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    const result = await saveServiceConfig({
+      effectiveServiceId: "custom:MyGateway",
+      serviceId: "custom",
+      isCustom: true,
+      resolvedCustomName: "MyGateway",
+      apiKey: "sk-test",
+      baseUrl: "https://api.example.com/v1",
+      apiFormat: "chat",
+      stream: true,
+      temperature: "0.7",
+      detectedModel: "model-b",
+      configuredModels: [{ id: "model-a" }],
+      removedModelIds: ["model-b"],
+      fetchJsonImpl: fetchJsonImpl as never,
+    });
+
+    expect(bodies[2]).toMatchObject({
+      service: "custom:MyGateway",
+      defaultModel: "model-a",
+      services: [
+        {
+          service: "custom",
+          models: ["model-a"],
+          name: "MyGateway",
+        },
+      ],
+    });
+    expect(result.status).toEqual({ state: "connected", models: [{ id: "model-a" }] });
   });
 });
 
